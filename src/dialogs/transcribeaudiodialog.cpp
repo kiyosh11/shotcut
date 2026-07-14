@@ -43,7 +43,6 @@
 #include <QSpinBox>
 #include <QTreeView>
 
-
 // List of supported languages from whispercpp
 static const std::vector<const char *> whisperLanguages = {
     "en", "zh", "de", "es",  "ru", "ko", "fr", "ja", "pt", "tr",  "pl", "ca", "nl", "ar", "sv",
@@ -240,7 +239,6 @@ TranscribeAudioDialog::TranscribeAudioDialog(const QString &trackName, QWidget *
     });
     configLayout->addWidget(modelBrowseButton, 2, 2, Qt::AlignLeft);
 
-
     // List of models
     m_table = new QTreeView();
     m_table->setSelectionMode(QAbstractItemView::SingleSelection);
@@ -399,14 +397,12 @@ void TranscribeAudioDialog::showEvent(QShowEvent *event)
     qDialog.setWindowModality(QmlApplication::dialogModality());
     int result = qDialog.exec();
     if (result == QMessageBox::Yes) {
-
         int index = m_model.getStandardIndex();
         downloadModel(index);
         setCurrentModel(index);
         updateWhisperStatus();
     }
 }
-
 
 void TranscribeAudioDialog::downloadModel(int index)
 {

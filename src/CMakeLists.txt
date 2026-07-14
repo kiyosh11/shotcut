@@ -346,7 +346,6 @@ if(WIN32)
   target_sources(shotcut PRIVATE widgets/openglvideowidget.h widgets/openglvideowidget.cpp)
   target_link_libraries(shotcut PRIVATE d3d11 d3dcompiler dxgi dxguid ole32)
 
-
   if(WINDOWS_DEPLOY)
     install(TARGETS shotcut RUNTIME DESTINATION ${CMAKE_INSTALL_PREFIX})
   else()

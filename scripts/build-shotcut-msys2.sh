@@ -1282,7 +1282,6 @@ function deploy
     # possibly needed on mingw64: libcrypto-3-x64.dll,liblz4.dll,libunwind.dll
   fi
   if [ "$DEBUG_BUILD" = "1" -o "$SDK" = "1" ]; then
-
     cmd cp -p /${TARGET_ARCH}/bin/libfftw3*.dll bin/
     cmd cp -p /${TARGET_ARCH}/lib/libfftw3*.a lib/
     cmd cp -p /${TARGET_ARCH}/include/fftw3* include/

@@ -53,7 +53,6 @@ private slots:
     void onModelRowClicked(const QModelIndex &index);
 
 private:
-
     void downloadModel(int index);
     void setCurrentModel(int index);
     void updateWhisperStatus();
