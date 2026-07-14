@@ -70,10 +70,7 @@ QmlExtensionFile::QmlExtensionFile(QObject *parent)
 
 QmlExtension *QmlExtension::load(const QString &id)
 {
-    QString filePath = appDir(id).absoluteFilePath(extensionFileName(id));
-    if (!QFile::exists(filePath)) {
-        filePath = installDir(id).absoluteFilePath(extensionFileName(id));
-    }
+    const QString filePath = installDir(id).absoluteFilePath(extensionFileName(id));
     if (!QFile::exists(filePath)) {
         LOG_ERROR() << filePath << "does not exist";
         return nullptr;

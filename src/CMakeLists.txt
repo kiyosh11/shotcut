@@ -346,13 +346,6 @@ if(WIN32)
   target_sources(shotcut PRIVATE widgets/openglvideowidget.h widgets/openglvideowidget.cpp)
   target_link_libraries(shotcut PRIVATE d3d11 d3dcompiler dxgi dxguid ole32)
 
-  # Runtime exception handler for debug only
-  if(CMAKE_SYSTEM_PROCESSOR STREQUAL "AMD64")
-    target_include_directories(shotcut PRIVATE ${CMAKE_SOURCE_DIR}/drmingw/include)
-    target_link_directories(shotcut PRIVATE ${CMAKE_SOURCE_DIR}/drmingw/x64/lib)
-    target_link_libraries(shotcut PRIVATE debug exchndl)
-  endif()
-
   if(WINDOWS_DEPLOY)
     install(TARGETS shotcut RUNTIME DESTINATION ${CMAKE_INSTALL_PREFIX})
   else()
