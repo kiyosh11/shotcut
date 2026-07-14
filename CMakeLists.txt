@@ -89,7 +89,7 @@ add_custom_target(codespell COMMAND
   cd "${CMAKE_SOURCE_DIR}" &&
   codespell -w -q 3
   -L shotcut,uint,seeked,really,prevent
-  -S export-chapters.js,export-edl.js,CuteLogger,drmingw,node_modules,moc_*,index.theme,*.ts,three.min.js,three.js,jquery.js,rangy-*.js,Makefile,shotcut.pro,*.desktop
+  -S export-chapters.js,export-edl.js,CuteLogger,node_modules,moc_*,index.theme,*.ts,three.min.js,three.js,jquery.js,rangy-*.js,Makefile,shotcut.pro,*.desktop
 )
 
 if(CLANG_FORMAT)
