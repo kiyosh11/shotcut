@@ -316,6 +316,49 @@ bool McpBridge::validateOperation(const QJsonObject &operation, QString &error) 
         return true;
     }
 
+    if (type == QStringLiteral("replace_subtitles")) {
+        int subtitleTrack = -1;
+        const auto *subtitles = m_window.timelineDock()->subtitlesModel();
+        if (!jsonInteger(operation, QStringLiteral("track"), &subtitleTrack)
+            || subtitleTrack < 0 || subtitleTrack >= subtitles->trackCount()) {
+            error = QStringLiteral("subtitle track does not exist");
+            return false;
+        }
+
+        const auto itemsValue = operation.value(QStringLiteral("items"));
+        if (!itemsValue.isArray()) {
+            error = QStringLiteral("items must be an array");
+            return false;
+        }
+
+        qint64 previousEnd = -1;
+        for (const auto &value : itemsValue.toArray()) {
+            if (!value.isObject()) {
+                error = QStringLiteral("each subtitle must be an object");
+                return false;
+            }
+            const auto item = value.toObject();
+            const auto startValue = item.value(QStringLiteral("start_ms"));
+            const auto endValue = item.value(QStringLiteral("end_ms"));
+            if (!startValue.isDouble() || !endValue.isDouble()
+                || !qIsFinite(startValue.toDouble()) || !qIsFinite(endValue.toDouble())) {
+                error = QStringLiteral("subtitle times must be finite numbers");
+                return false;
+            }
+            const qint64 start = static_cast<qint64>(startValue.toDouble());
+            const qint64 end = static_cast<qint64>(endValue.toDouble());
+            if (startValue.toDouble() != static_cast<double>(start)
+                || endValue.toDouble() != static_cast<double>(end) || start < 0 || end <= start
+                || start < previousEnd || !item.value(QStringLiteral("text")).isString()) {
+                error = QStringLiteral(
+                    "subtitles must be sorted, non-overlapping, and have integer start_ms < end_ms");
+                return false;
+            }
+            previousEnd = end;
+        }
+        return true;
+    }
+
     int track = -1;
     if (!jsonInteger(operation, QStringLiteral("track"), &track)
         && !jsonInteger(operation, QStringLiteral("from_track"), &track)) {
@@ -327,7 +370,13 @@ bool McpBridge::validateOperation(const QJsonObject &operation, QString &error) 
         return false;
     }
 
-    if (type == QStringLiteral("remove_track") || type == QStringLiteral("set_track_state"))
+    if (type == QStringLiteral("set_track_state"))
+        return true;
+    if (m_window.timelineDock()->isTrackLocked(track)) {
+        error = QStringLiteral("track %1 is locked").arg(track);
+        return false;
+    }
+    if (type == QStringLiteral("remove_track"))
         return true;
 
     if (type == QStringLiteral("insert_media")) {
@@ -344,26 +393,6 @@ bool McpBridge::validateOperation(const QJsonObject &operation, QString &error) 
         return true;
     }
 
-    if (type == QStringLiteral("replace_subtitles")) {
-        const auto items = operation.value(QStringLiteral("items")).toArray();
-        qint64 previousEnd = -1;
-        for (const auto &value : items) {
-            const auto item = value.toObject();
-            const qint64 start = static_cast<qint64>(
-                item.value(QStringLiteral("start_ms")).toDouble(-1));
-            const qint64 end = static_cast<qint64>(
-                item.value(QStringLiteral("end_ms")).toDouble(-1));
-            if (start < 0 || end <= start || start < previousEnd
-                || !item.value(QStringLiteral("text")).isString()) {
-                error = QStringLiteral(
-                    "subtitles must be sorted, non-overlapping, and have start_ms < end_ms");
-                return false;
-            }
-            previousEnd = end;
-        }
-        return true;
-    }
-
     int clip = -1;
     if (!jsonInteger(operation, QStringLiteral("clip"), &clip) || !clipExists(track, clip)) {
         error = QStringLiteral("clip does not exist");
@@ -376,6 +405,10 @@ bool McpBridge::validateOperation(const QJsonObject &operation, QString &error) 
         if (!jsonInteger(operation, QStringLiteral("to_track"), &toTrack) || !trackExists(toTrack)
             || !jsonInteger(operation, QStringLiteral("position"), &position) || position < 0) {
             error = QStringLiteral("move destination is invalid");
+            return false;
+        }
+        if (m_window.timelineDock()->isTrackLocked(toTrack)) {
+            error = QStringLiteral("destination track %1 is locked").arg(toTrack);
             return false;
         }
     } else if (type == QStringLiteral("trim_clip")) {
@@ -406,15 +439,22 @@ bool McpBridge::validateOperation(const QJsonObject &operation, QString &error) 
                && !operation.value(QStringLiteral("gain")).isDouble()) {
         error = QStringLiteral("gain must be numeric");
         return false;
-    } else if ((type == QStringLiteral("add_filter")
-                || type == QStringLiteral("set_filter_parameters"))
-               && !operation.value(QStringLiteral("parameters")).isObject()) {
-        error = QStringLiteral("parameters must be an object");
-        return false;
+    } else if (type == QStringLiteral("add_filter")) {
+        if (requiredString(operation, QStringLiteral("filter_id")).isEmpty()
+            || !operation.value(QStringLiteral("parameters")).isObject()) {
+            error = QStringLiteral("filter_id and parameters are required");
+            return false;
+        }
+    } else if (type == QStringLiteral("set_filter_parameters")) {
+        int filterIndex;
+        if (!jsonInteger(operation, QStringLiteral("filter_index"), &filterIndex)
+            || filterIndex < 0 || !operation.value(QStringLiteral("parameters")).isObject()) {
+            error = QStringLiteral("filter_index and parameters are invalid");
+            return false;
+        }
     }
     return true;
 }
-
 bool McpBridge::applyOperation(const QJsonObject &operation, QString &error)
 {
     const QString type = operation.value(QStringLiteral("op")).toString();
