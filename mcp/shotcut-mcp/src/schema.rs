@@ -266,8 +266,12 @@ mod tests {
     }
 
     #[test]
-    fn save_defaults_to_relative_paths() {
-        let request: SaveProjectRequest = serde_json::from_value(serde_json::json!({"expected_revision": 1})).unwrap();
+    fn save_requires_a_revision_and_defaults_safely() {
+        assert!(
+            serde_json::from_value::<SaveProjectRequest>(serde_json::json!({})).is_err()
+        );
+        let request: SaveProjectRequest =
+            serde_json::from_value(serde_json::json!({"expected_revision": 1})).unwrap();
         assert!(request.relative_paths);
         assert!(!request.overwrite);
     }
