@@ -47,10 +47,8 @@ bool McpBridge::applySubtitleOperation(const QJsonObject &operation, QString &er
             item.value(QStringLiteral("text")).toString().toUtf8().toStdString(),
         });
     }
-    stack->push(new Subtitles::OverwriteSubtitlesCommand(
-        *subtitles,
-        operation.value(QStringLiteral("track")).toInt(),
-        items));
+    const int track = operation.value(QStringLiteral("track")).toInt();
+    stack->push(new Subtitles::OverwriteSubtitlesCommand(*subtitles, track, items));
     return true;
 }
 
