@@ -15,6 +15,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
 
       - name: Setup MSYS2
         uses: msys2/setup-msys2@v2
@@ -103,7 +105,8 @@ jobs:
           echo INSTALL_DIR=\"$(pwd)/build\" > build-shotcut.conf
           echo SHOTCUT_VERSION=\"$VERSION\" >> build-shotcut.conf
           echo SHOTCUT_HEAD=0 >> build-shotcut.conf
-          echo SHOTCUT_REVISION=origin/${{ github.head_ref || github.ref_name }} >> build-shotcut.conf
+          echo SHOTCUT_REPO=$PWD >> build-shotcut.conf
+          echo SHOTCUT_REVISION=$GITHUB_SHA >> build-shotcut.conf
           bash scripts/build-shotcut-msys2.sh
 
       - name: Package the portable zip

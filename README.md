@@ -16,7 +16,9 @@
 
 ## AI/MCP integration
 
-This fork includes an opt-in pure-Rust MCP server and a local authenticated Shotcut editing bridge. See [mcp/shotcut-mcp/README.md](mcp/shotcut-mcp/README.md) for capabilities, safeguards, and client configuration.
+This fork includes an opt-in pure-Rust MCP server and a local authenticated Shotcut editing bridge. See [mcp/shotcut-mcp/README.md](mcp/shotcut-mcp/README.md) for capabilities, safeguards, build instructions, and client configuration.
+
+Official binaries from shotcut.org do not contain this fork's MCP bridge or sidecar. MCP users need a custom binary built from this audited fork revision; an unrelated upstream executable cannot provide these tools.
 
 ## Install
 

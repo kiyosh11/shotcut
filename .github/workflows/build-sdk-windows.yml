@@ -68,6 +68,8 @@ jobs:
             mingw-w64-x86_64-zimg
 
       - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
 
       - name: Build
         shell: msys2 {0}
@@ -90,6 +92,9 @@ jobs:
           echo INSTALL_DIR=\"$CHECKOUT_DIR/build\"
           echo INSTALL_DIR=\"$CHECKOUT_DIR/build\" > build-shotcut.conf
           echo SHOTCUT_VERSION=\"$VERSION\" >> build-shotcut.conf
+          echo SHOTCUT_HEAD=0 >> build-shotcut.conf
+          echo SHOTCUT_REPO=$CHECKOUT_DIR >> build-shotcut.conf
+          echo SHOTCUT_REVISION=$GITHUB_SHA >> build-shotcut.conf
           echo DEBUG_BUILD=1 >> build-shotcut.conf
           bash scripts/build-shotcut-msys2.sh -s
           mv build/shotcut-sdk.txz build/shotcut-win64-sdk-$FILENAME_VERSION.txz

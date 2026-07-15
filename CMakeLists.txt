@@ -24,6 +24,7 @@ option(CLANG_FORMAT "Enable Clang Format" ON)
 option(BUILD_DOCS "Build QDoc API documentation" OFF)
 option(EXTERNAL_LAUNCHERS "Whether include features to launch external programs; for example, this should be off for Flatpak due to sandbox." ON)
 option(USE_VULKAN "Whether to use Vulkan for hardware video decoding" OFF)
+option(SHOTCUT_BUILD_MCP_SERVER "Build and install the optional Rust MCP sidecar" OFF)
 if (UNIX AND NOT APPLE)
   option(BUILD_MINIMAL_MEDIA_BACKEND "Whether to build the `minimal` Qt media backend for Linux/BSD" OFF)
 endif()
@@ -75,6 +76,53 @@ add_subdirectory(src)
 add_subdirectory(translations)
 if(UNIX AND NOT APPLE AND BUILD_MINIMAL_MEDIA_BACKEND)
   add_subdirectory(MinimalMediaBackend)
+endif()
+
+if(SHOTCUT_BUILD_MCP_SERVER)
+  find_program(CARGO_EXECUTABLE NAMES cargo DOC "Path to the Cargo executable")
+  if(NOT CARGO_EXECUTABLE)
+    message(FATAL_ERROR
+      "SHOTCUT_BUILD_MCP_SERVER requires Cargo. Install a Rust toolchain or set "
+      "CARGO_EXECUTABLE; CMake does not install Rust automatically.")
+  endif()
+
+  set(SHOTCUT_MCP_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/mcp/shotcut-mcp")
+  set(SHOTCUT_MCP_CARGO_TARGET_DIR "${CMAKE_CURRENT_BINARY_DIR}/mcp-target"
+    CACHE PATH "Cargo target directory for the Shotcut MCP sidecar")
+  set(SHOTCUT_MCP_BINARY
+    "${SHOTCUT_MCP_CARGO_TARGET_DIR}/release/shotcut-mcp${CMAKE_EXECUTABLE_SUFFIX}")
+  file(GLOB_RECURSE SHOTCUT_MCP_RUST_SOURCES CONFIGURE_DEPENDS
+    "${SHOTCUT_MCP_SOURCE_DIR}/src/*.rs")
+
+  add_custom_command(
+    OUTPUT "${SHOTCUT_MCP_BINARY}"
+    COMMAND "${CARGO_EXECUTABLE}" build
+      --manifest-path "${SHOTCUT_MCP_SOURCE_DIR}/Cargo.toml"
+      --target-dir "${SHOTCUT_MCP_CARGO_TARGET_DIR}"
+      --release
+      --locked
+    DEPENDS
+      "${SHOTCUT_MCP_SOURCE_DIR}/Cargo.toml"
+      "${SHOTCUT_MCP_SOURCE_DIR}/Cargo.lock"
+      "${SHOTCUT_MCP_SOURCE_DIR}/rust-toolchain.toml"
+      ${SHOTCUT_MCP_RUST_SOURCES}
+    WORKING_DIRECTORY "${SHOTCUT_MCP_SOURCE_DIR}"
+    COMMENT "Building the Shotcut MCP Rust sidecar"
+    VERBATIM
+    USES_TERMINAL
+  )
+  add_custom_target(shotcut-mcp-server ALL DEPENDS "${SHOTCUT_MCP_BINARY}")
+
+  if(APPLE)
+    set(SHOTCUT_MCP_INSTALL_DESTINATION "Shotcut.app/Contents/MacOS")
+  elseif(WIN32 AND WINDOWS_DEPLOY)
+    set(SHOTCUT_MCP_INSTALL_DESTINATION ".")
+  else()
+    include(GNUInstallDirs)
+    set(SHOTCUT_MCP_INSTALL_DESTINATION "${CMAKE_INSTALL_BINDIR}")
+  endif()
+  install(PROGRAMS "${SHOTCUT_MCP_BINARY}"
+    DESTINATION "${SHOTCUT_MCP_INSTALL_DESTINATION}")
 endif()
 
 option(SHOTCUT_BUILD_TESTS "Build unit tests" OFF)
