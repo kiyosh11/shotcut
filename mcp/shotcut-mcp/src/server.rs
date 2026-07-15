@@ -60,7 +60,7 @@ impl ShotcutServer {
 #[tool_router]
 impl ShotcutServer {
     #[tool(
-        description = "Read connection state, project path, revision, undo/redo state, allowed roots, export presets, and queued jobs.",
+        description = "Read connection state, project path, revision, undo/redo state, allowed roots, installed clip filters, export presets, and queued jobs.",
         annotations(
             read_only_hint = true,
             destructive_hint = false,
