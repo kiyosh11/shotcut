@@ -381,9 +381,12 @@ bool McpBridge::validateOperation(const QJsonObject &operation, QString &error) 
             const auto item = value.toObject();
             const auto startValue = item.value(QStringLiteral("start_ms"));
             const auto endValue = item.value(QStringLiteral("end_ms"));
+            constexpr double maximumExactJsonInteger = 9007199254740991.0;
             if (!startValue.isDouble() || !endValue.isDouble()
-                || !qIsFinite(startValue.toDouble()) || !qIsFinite(endValue.toDouble())) {
-                error = QStringLiteral("subtitle times must be finite numbers");
+                || !qIsFinite(startValue.toDouble()) || !qIsFinite(endValue.toDouble())
+                || qAbs(startValue.toDouble()) > maximumExactJsonInteger
+                || qAbs(endValue.toDouble()) > maximumExactJsonInteger) {
+                error = QStringLiteral("subtitle times must be exact finite integers");
                 return false;
             }
             const qint64 start = static_cast<qint64>(startValue.toDouble());
@@ -476,11 +479,13 @@ bool McpBridge::validateOperation(const QJsonObject &operation, QString &error) 
             error = QStringLiteral("fade edge or duration_frames is invalid");
             return false;
         }
-    } else if (type == QStringLiteral("set_clip_gain")
-               && (!operation.value(QStringLiteral("gain")).isDouble()
-                   || !qIsFinite(operation.value(QStringLiteral("gain")).toDouble()))) {
-        error = QStringLiteral("gain must be a finite number");
-        return false;
+    } else if (type == QStringLiteral("set_clip_gain")) {
+        const auto gain = operation.value(QStringLiteral("gain"));
+        if (!gain.isDouble() || !qIsFinite(gain.toDouble()) || gain.toDouble() < -120.0
+            || gain.toDouble() > 60.0) {
+            error = QStringLiteral("gain must be between -120 and 60 dB");
+            return false;
+        }
     } else if (type == QStringLiteral("add_filter")
                || type == QStringLiteral("set_filter_parameters")) {
         if (type == QStringLiteral("add_filter")
@@ -518,8 +523,10 @@ bool McpBridge::validateOperation(const QJsonObject &operation, QString &error) 
                             .arg(name);
                 return false;
             }
-            if (value.isDouble() && !qIsFinite(value.toDouble())) {
-                error = QStringLiteral("filter parameter '%1' must be finite").arg(name);
+            if (value.isDouble()
+                && (!qIsFinite(value.toDouble()) || qAbs(value.toDouble()) > 1.0e12)) {
+                error = QStringLiteral("filter parameter '%1' is outside the numeric limit")
+                            .arg(name);
                 return false;
             }
             if (value.isString()) {
