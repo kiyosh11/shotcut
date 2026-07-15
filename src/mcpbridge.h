@@ -18,8 +18,11 @@
 #include <QObject>
 #include <QStringList>
 
+#include <memory>
+
 class MainWindow;
 class QLocalSocket;
+class QLockFile;
 
 class McpBridge : public QObject
 {
@@ -79,12 +82,14 @@ private:
 
     MainWindow &m_window;
     QLocalServer m_server;
+    std::unique_ptr<QLockFile> m_endpointLock;
     QHash<QLocalSocket *, QByteArray> m_buffers;
     QByteArray m_token;
     QString m_endpoint;
     QStringList m_allowedRoots;
     qint64 m_revision{1};
     bool m_busy{false};
+    bool m_ownsEndpoint{false};
 };
 
 #endif // MCPBRIDGE_H

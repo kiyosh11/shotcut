@@ -702,6 +702,7 @@ public:
     AddTrackCommand(MultitrackModel &model, bool isVideo, QUndoCommand *parent = 0);
     void redo();
     void undo();
+    int trackIndex() const { return m_trackIndex; }
 
 private:
     MultitrackModel &m_model;
@@ -719,6 +720,7 @@ public:
                        QUndoCommand *parent = 0);
     void redo();
     void undo();
+    int trackIndex() const { return m_trackIndex; }
 
 private:
     MultitrackModel &m_model;

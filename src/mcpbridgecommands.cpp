@@ -9,10 +9,13 @@
 
 #include "mcpbridge.h"
 
+#include "mcpundoutils.h"
+
 #include "docks/encodedock.h"
 #include "docks/timelinedock.h"
 #include "jobqueue.h"
 #include "mainwindow.h"
+#include "models/multitrackmodel.h"
 
 #include <QFileInfo>
 #include <QJsonArray>
@@ -194,6 +197,12 @@ McpBridge::RpcResult McpBridge::applyEditPlan(const QJsonObject &params)
                         .arg(error));
             }
         }
+        if (m_window.undoStack()->canRedo()) {
+            return RpcResult::failure(
+                -32002,
+                QStringLiteral(
+                    "Apply or discard the existing redo history before submitting an edit plan"));
+        }
         return RpcResult::success(QJsonObject{
             {QStringLiteral("valid"), true},
             {QStringLiteral("dry_run"), true},
@@ -202,27 +211,54 @@ McpBridge::RpcResult McpBridge::applyEditPlan(const QJsonObject &params)
         });
     }
 
+    for (int index = 0; index < operations.size(); ++index) {
+        QString error;
+        if (!validateOperation(operations.at(index).toObject(), error)) {
+            return RpcResult::failure(
+                -32602,
+                QStringLiteral(
+                    "Operation %1 is invalid against the current snapshot: %2. "
+                    "After structural edits, apply and re-read the snapshot before addressing "
+                    "new tracks or clips by index.")
+                    .arg(index)
+                    .arg(error));
+        }
+    }
+
     auto *stack = m_window.undoStack();
-    const int beforeRevision = stack->index();
+    if (stack->canRedo()) {
+        return RpcResult::failure(
+            -32002,
+            QStringLiteral(
+                "Apply or discard the existing redo history before submitting an edit plan"));
+    }
+
+    const auto undoState = McpUndo::capture(*stack);
     stack->beginMacro(label);
     int applied = 0;
     QString applyError;
     for (const auto &value : operations) {
-        if (!validateOperation(value.toObject(), applyError)
-            || !applyOperation(value.toObject(), applyError))
+        if (!applyOperation(value.toObject(), applyError))
             break;
         ++applied;
     }
     stack->endMacro();
 
     if (applied != operations.size()) {
-        if (stack->index() != beforeRevision && stack->canUndo())
-            stack->undo();
-        const QString message = QStringLiteral("Edit plan rolled back at operation %1: %2")
-                                    .arg(applied)
-                                    .arg(applyError);
-        QJsonObject data;
-        data.insert(QStringLiteral("revision"), static_cast<double>(m_revision));
+        const bool historyRestored = McpUndo::rollbackLatestMacro(*stack, undoState);
+        const QString message = historyRestored
+                                    ? QStringLiteral("Edit plan rolled back at operation %1: %2")
+                                          .arg(applied)
+                                          .arg(applyError)
+                                    : QStringLiteral("Edit plan failed at operation %1 and the "
+                                                     "undo stack could not be restored: "
+                                                     "%2")
+                                          .arg(applied)
+                                          .arg(applyError);
+        QJsonObject data{
+            {QStringLiteral("revision"), static_cast<double>(m_revision)},
+            {QStringLiteral("history_restored"), historyRestored},
+        };
         return RpcResult::failure(-32003, message, data);
     }
 
@@ -332,9 +368,28 @@ bool McpBridge::validateOperation(const QJsonObject &operation, QString &error) 
         }
         if (operation.contains(QStringLiteral("index"))) {
             int index;
-            if (!jsonInteger(operation, QStringLiteral("index"), &index) || index < 0
-                || index > m_window.timelineDock()->model()->trackList().size()) {
-                error = QStringLiteral("index is outside the track insertion range");
+            if (!jsonInteger(operation, QStringLiteral("index"), &index)) {
+                error = QStringLiteral("index must be an integer");
+                return false;
+            }
+
+            const auto &tracks = m_window.timelineDock()->model()->trackList();
+            int firstAudioTrack = tracks.size();
+            for (int trackIndex = 0; trackIndex < tracks.size(); ++trackIndex) {
+                if (tracks.at(trackIndex).type == AudioTrackType) {
+                    firstAudioTrack = trackIndex;
+                    break;
+                }
+            }
+            const int minimum = kind == QStringLiteral("video")
+                                    ? 0
+                                    : (tracks.isEmpty() ? 0 : qMax(firstAudioTrack, 1));
+            const int maximum = kind == QStringLiteral("video") ? firstAudioTrack : tracks.size();
+            if (index < minimum || index > maximum) {
+                error = QStringLiteral("%1 tracks can only be inserted at indexes %2 through %3")
+                            .arg(kind)
+                            .arg(minimum)
+                            .arg(maximum);
                 return false;
             }
         }
@@ -485,10 +540,30 @@ bool McpBridge::validateOperation(const QJsonObject &operation, QString &error) 
             error = QStringLiteral("trim edge or delta_frames is invalid");
             return false;
         }
-    } else if (type == QStringLiteral("split_clip") || type == QStringLiteral("add_transition")) {
+    } else if (type == QStringLiteral("split_clip")) {
         int position;
         if (!jsonInteger(operation, QStringLiteral("position"), &position) || position < 0) {
             error = QStringLiteral("position must be a non-negative frame");
+            return false;
+        }
+    } else if (type == QStringLiteral("add_transition")) {
+        int position;
+        if (!jsonInteger(operation, QStringLiteral("position"), &position) || position < 0) {
+            error = QStringLiteral("position must be a non-negative frame");
+            return false;
+        }
+        if (operation.contains(QStringLiteral("ripple"))
+            && !operation.value(QStringLiteral("ripple")).isBool()) {
+            error = QStringLiteral("ripple must be boolean");
+            return false;
+        }
+        const bool ripple = operation.value(QStringLiteral("ripple")).toBool();
+        if (!m_window.timelineDock()->model()->addTransitionValid(track,
+                                                                  track,
+                                                                  clip,
+                                                                  position,
+                                                                  ripple)) {
+            error = QStringLiteral("transition position is not valid for this clip");
             return false;
         }
     } else if (type == QStringLiteral("set_clip_fade")) {
