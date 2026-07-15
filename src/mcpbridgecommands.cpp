@@ -54,11 +54,11 @@ bool McpBridge::checkRevision(const QJsonObject &params, QString &error) const
     const auto value = params.value(QStringLiteral("expected_revision"));
     if (value.isNull() || value.isUndefined())
         return true;
-    if (!value.isDouble()) {
+    int expected = -1;
+    if (!jsonInteger(params, QStringLiteral("expected_revision"), &expected)) {
         error = QStringLiteral("expected_revision must be an integer");
         return false;
     }
-    const int expected = value.toInt(-1);
     const int actual = m_window.undoStack()->index();
     if (expected != actual) {
         error = QStringLiteral("Project revision conflict: expected %1, current %2. Read a new snapshot.")
@@ -126,6 +126,20 @@ McpBridge::RpcResult McpBridge::saveProject(const QJsonObject &params)
         return RpcResult::failure(-32004,
                                   QStringLiteral("Save path is outside SHOTCUT_MCP_ALLOWED_ROOTS"));
 
+    const QString currentPath = normalizedPathForPolicy(m_window.fileName(), true);
+    const auto pathComparison =
+#ifdef Q_OS_WIN
+        Qt::CaseInsensitive;
+#else
+        Qt::CaseSensitive;
+#endif
+    if (QFileInfo::exists(normalized) && normalized.compare(currentPath, pathComparison) != 0
+        && !params.value(QStringLiteral("overwrite")).toBool(false)) {
+        return RpcResult::failure(
+            -32002,
+            QStringLiteral("Save target exists and overwrite is false"));
+    }
+
     const bool relativePaths = params.value(QStringLiteral("relative_paths")).toBool(true);
     if (!m_window.saveProjectAs(normalized, relativePaths))
         return RpcResult::failure(-32003, QStringLiteral("Shotcut failed to save the project"));
@@ -152,15 +166,22 @@ McpBridge::RpcResult McpBridge::applyEditPlan(const QJsonObject &params)
         if (!operations.at(index).isObject())
             return RpcResult::failure(-32602,
                                       QStringLiteral("Operation %1 must be an object").arg(index));
-        QString error;
-        if (!validateOperation(operations.at(index).toObject(), error)) {
-            return RpcResult::failure(
-                -32602,
-                QStringLiteral("Operation %1 is invalid: %2").arg(index).arg(error));
-        }
     }
 
     if (params.value(QStringLiteral("dry_run")).toBool(false)) {
+        for (int index = 0; index < operations.size(); ++index) {
+            QString error;
+            if (!validateOperation(operations.at(index).toObject(), error)) {
+                return RpcResult::failure(
+                    -32602,
+                    QStringLiteral(
+                        "Operation %1 is invalid against the current snapshot: %2. "
+                        "After structural edits, apply and re-read the snapshot before addressing "
+                        "new tracks or clips by index.")
+                        .arg(index)
+                        .arg(error));
+            }
+        }
         return RpcResult::success(QJsonObject{
             {QStringLiteral("valid"), true},
             {QStringLiteral("dry_run"), true},
@@ -436,8 +457,9 @@ bool McpBridge::validateOperation(const QJsonObject &operation, QString &error) 
             return false;
         }
     } else if (type == QStringLiteral("set_clip_gain")
-               && !operation.value(QStringLiteral("gain")).isDouble()) {
-        error = QStringLiteral("gain must be numeric");
+               && (!operation.value(QStringLiteral("gain")).isDouble()
+                   || !qIsFinite(operation.value(QStringLiteral("gain")).toDouble()))) {
+        error = QStringLiteral("gain must be a finite number");
         return false;
     } else if (type == QStringLiteral("add_filter")) {
         if (requiredString(operation, QStringLiteral("filter_id")).isEmpty()
