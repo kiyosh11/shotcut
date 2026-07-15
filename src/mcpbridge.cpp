@@ -61,7 +61,9 @@ QString jobState(const AbstractJob &job)
         return job.paused() ? QStringLiteral("paused") : QStringLiteral("running");
     if (job.stopped())
         return QStringLiteral("stopped");
-    return QStringLiteral("finished");
+    if (job.exitStatus() != QProcess::NormalExit || job.exitCode() != 0)
+        return QStringLiteral("failed");
+    return QStringLiteral("completed");
 }
 } // namespace
 
