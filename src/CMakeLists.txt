@@ -90,6 +90,7 @@ add_executable(shotcut WIN32 MACOSX_BUNDLE
   mcpbridgecommands.cpp
   mcpbridgeedit.cpp
   mcpbridgefilters.cpp
+  mcpundoutils.h
   mainwindow.cpp mainwindow.h
   mainwindow.ui
   mltcontroller.cpp mltcontroller.h

@@ -30,16 +30,34 @@ bool McpBridge::applyTimelineOperation(const QJsonObject &operation, QString &er
     if (type == QStringLiteral("add_track")) {
         const bool video = operation.value(QStringLiteral("kind")).toString()
                            == QStringLiteral("video");
-        const int oldCount = model->trackList().size();
-        int newIndex = oldCount;
+        int newIndex = -1;
         if (operation.value(QStringLiteral("index")).isDouble()) {
-            newIndex = operation.value(QStringLiteral("index")).toInt();
-            stack->push(new Timeline::InsertTrackCommand(*model,
-                                                         newIndex,
-                                                         video ? VideoTrackType : AudioTrackType));
+            const int requestedIndex = operation.value(QStringLiteral("index")).toInt();
+            if (!video && model->trackList().isEmpty()) {
+                auto *command = new Timeline::AddTrackCommand(*model, false);
+                stack->push(command);
+                newIndex = command->trackIndex();
+            } else {
+                auto *command = new Timeline::InsertTrackCommand(*model,
+                                                                 requestedIndex,
+                                                                 video ? VideoTrackType
+                                                                       : AudioTrackType);
+                stack->push(command);
+                newIndex = command->trackIndex();
+            }
         } else {
-            stack->push(new Timeline::AddTrackCommand(*model, video));
+            auto *command = new Timeline::AddTrackCommand(*model, video);
+            stack->push(command);
+            newIndex = command->trackIndex();
         }
+
+        const TrackType expectedType = video ? VideoTrackType : AudioTrackType;
+        if (newIndex < 0 || newIndex >= model->trackList().size()
+            || model->trackList().at(newIndex).type != expectedType) {
+            error = QStringLiteral("Shotcut did not create the requested track");
+            return false;
+        }
+
         const QString name = operation.value(QStringLiteral("name")).toString().trimmed();
         if (!name.isEmpty())
             stack->push(new Timeline::NameTrackCommand(*model, newIndex, name));
@@ -169,7 +187,16 @@ bool McpBridge::applyTimelineOperation(const QJsonObject &operation, QString &er
     if (type == QStringLiteral("add_transition")) {
         const int position = operation.value(QStringLiteral("position")).toInt();
         const bool ripple = operation.value(QStringLiteral("ripple")).toBool();
-        stack->push(new Timeline::AddTransitionCommand(*timeline, track, clip, position, ripple));
+        if (!model->addTransitionValid(track, track, clip, position, ripple)) {
+            error = QStringLiteral("transition position is not valid for this clip");
+            return false;
+        }
+        auto *command = new Timeline::AddTransitionCommand(*timeline, track, clip, position, ripple);
+        stack->push(command);
+        if (command->getTransitionIndex() < 0) {
+            error = QStringLiteral("Shotcut could not create the transition");
+            return false;
+        }
         return true;
     }
 

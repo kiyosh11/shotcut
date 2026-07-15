@@ -117,7 +117,8 @@ pub enum FilterParameterValue {
 pub enum EditOperation {
     AddTrack {
         kind: TrackKind,
-        /// Insert at this index; omit to append.
+        /// Insert at this logical timeline index. Video tracks must remain before audio tracks.
+        /// Omit to use Shotcut's default position (top video or last audio).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         index: Option<i32>,
         #[serde(default, skip_serializing_if = "Option::is_none")]

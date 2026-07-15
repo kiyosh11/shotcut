@@ -1720,6 +1720,7 @@ bool AddTransitionByTrimOutCommand::mergeWith(const QUndoCommand *other)
 AddTrackCommand::AddTrackCommand(MultitrackModel &model, bool isVideo, QUndoCommand *parent)
     : QUndoCommand(parent)
     , m_model(model)
+    , m_trackIndex(-1)
     , m_isVideo(isVideo)
 {
     if (isVideo)
@@ -1735,6 +1736,8 @@ void AddTrackCommand::redo()
         m_trackIndex = m_model.addVideoTrack();
     else
         m_trackIndex = m_model.addAudioTrack();
+    if (m_trackIndex < 0 || m_trackIndex >= m_model.trackList().size())
+        return;
     int mlt_index = m_model.trackList().at(m_trackIndex).mlt_index;
     std::unique_ptr<Mlt::Multitrack> multitrack(m_model.tractor()->multitrack());
     if (!multitrack || !multitrack->is_valid())
@@ -1752,7 +1755,8 @@ void AddTrackCommand::redo()
 void AddTrackCommand::undo()
 {
     LOG_DEBUG() << (m_isVideo ? "video" : "audio") << m_uuid;
-    m_model.removeTrack(m_trackIndex);
+    if (m_trackIndex >= 0 && m_trackIndex < m_model.trackList().size())
+        m_model.removeTrack(m_trackIndex);
 }
 
 InsertTrackCommand::InsertTrackCommand(MultitrackModel &model,
@@ -1761,12 +1765,16 @@ InsertTrackCommand::InsertTrackCommand(MultitrackModel &model,
                                        QUndoCommand *parent)
     : QUndoCommand(parent)
     , m_model(model)
-    , m_trackIndex(qBound(0, trackIndex, qMax(model.rowCount() - 1, 0)))
+    , m_trackIndex(qBound(0, trackIndex, model.rowCount()))
     , m_trackType(trackType)
 {
     if (trackType != AudioTrackType && trackType != VideoTrackType) {
-        m_trackType = model.trackList().size() > 0 ? model.trackList().at(m_trackIndex).type
-                                                   : VideoTrackType;
+        if (model.trackList().isEmpty()) {
+            m_trackType = VideoTrackType;
+        } else {
+            const int fallbackIndex = qMin(m_trackIndex, model.trackList().size() - 1);
+            m_trackType = model.trackList().at(fallbackIndex).type;
+        }
     }
     if (m_trackType == AudioTrackType)
         setText(QObject::tr("Insert audio track"));
@@ -1778,7 +1786,13 @@ void InsertTrackCommand::redo()
 {
     LOG_DEBUG() << "trackIndex" << m_trackIndex << "type"
                 << (m_trackType == AudioTrackType ? "audio" : "video");
+    const int oldTrackCount = m_model.trackList().size();
     m_model.insertTrack(m_trackIndex, m_trackType);
+    if (m_trackIndex < 0 || m_trackIndex >= m_model.trackList().size()
+        || m_model.trackList().size() != oldTrackCount + 1) {
+        m_trackIndex = -1;
+        return;
+    }
     int mlt_index = m_model.trackList().at(m_trackIndex).mlt_index;
     std::unique_ptr<Mlt::Multitrack> multitrack(m_model.tractor()->multitrack());
     if (!multitrack || !multitrack->is_valid())
@@ -1797,7 +1811,8 @@ void InsertTrackCommand::undo()
 {
     LOG_DEBUG() << "trackIndex" << m_trackIndex << "type"
                 << (m_trackType == AudioTrackType ? "audio" : "video");
-    m_model.removeTrack(m_trackIndex);
+    if (m_trackIndex >= 0 && m_trackIndex < m_model.trackList().size())
+        m_model.removeTrack(m_trackIndex);
 }
 
 RemoveTrackCommand::RemoveTrackCommand(MultitrackModel &model, int trackIndex, QUndoCommand *parent)

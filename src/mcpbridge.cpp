@@ -16,6 +16,7 @@
 #include "jobqueue.h"
 #include "mainwindow.h"
 #include "mltcontroller.h"
+#include "models/attachedfiltersmodel.h"
 #include "models/metadatamodel.h"
 #include "models/multitrackmodel.h"
 #include "models/subtitlesmodel.h"
@@ -24,11 +25,13 @@
 
 #include <MltFilter.h>
 #include <MltProducer.h>
+#include <QCryptographicHash>
 #include <QDir>
 #include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QLocalSocket>
+#include <QLockFile>
 #include <QScopedPointer>
 #include <QScopedValueRollback>
 #include <QUndoStack>
@@ -107,8 +110,12 @@ void McpBridge::advanceRevision()
 McpBridge::~McpBridge()
 {
     m_server.close();
-    if (!m_endpoint.isEmpty())
+    if (m_ownsEndpoint) {
         QLocalServer::removeServer(m_endpoint);
+        m_ownsEndpoint = false;
+    }
+    if (m_endpointLock && m_endpointLock->isLocked())
+        m_endpointLock->unlock();
 }
 
 bool McpBridge::startFromEnvironment()
@@ -132,12 +139,38 @@ bool McpBridge::startFromEnvironment()
     }
 
     loadAllowedRoots();
+
+    const QByteArray endpointHash
+        = QCryptographicHash::hash(m_endpoint.toUtf8(), QCryptographicHash::Sha256).toHex().left(24);
+    const QString lockPath = QDir::temp().filePath(
+        QStringLiteral("shotcut-mcp-%1.lock").arg(QString::fromLatin1(endpointHash)));
+    m_endpointLock.reset(new QLockFile(lockPath));
+    m_endpointLock->setStaleLockTime(0);
+    if (!m_endpointLock->tryLock(0)) {
+        LOG_WARNING() << "MCP bridge endpoint is already owned by another Shotcut instance";
+        m_endpointLock.reset();
+        return false;
+    }
+
+    QLocalSocket probe;
+    probe.connectToServer(m_endpoint, QIODevice::ReadWrite);
+    if (probe.waitForConnected(100)) {
+        probe.abort();
+        LOG_WARNING() << "MCP bridge endpoint is already served by another process";
+        m_endpointLock->unlock();
+        m_endpointLock.reset();
+        return false;
+    }
+
     QLocalServer::removeServer(m_endpoint);
     m_server.setSocketOptions(QLocalServer::UserAccessOption);
     if (!m_server.listen(m_endpoint)) {
         LOG_WARNING() << "MCP bridge failed to listen:" << m_server.errorString();
+        m_endpointLock->unlock();
+        m_endpointLock.reset();
         return false;
     }
+    m_ownsEndpoint = true;
     LOG_INFO() << "MCP bridge listening on a same-user local socket";
     return true;
 }
@@ -298,23 +331,23 @@ QJsonObject McpBridge::editorStatus() const
             || metadata->isOutputOnly()) {
             continue;
         }
-        const auto type = metadata->type();
-        if (type != QmlMetadata::Filter && type != QmlMetadata::Link
-            && type != QmlMetadata::FilterSet) {
+        const auto metadataType = metadata->type();
+        if (metadataType != QmlMetadata::Filter && metadataType != QmlMetadata::Link
+            && metadataType != QmlMetadata::FilterSet) {
             continue;
         }
         const QString id = metadata->uniqueId();
         if (id.isEmpty())
             continue;
-        QString type = QStringLiteral("filter");
-        if (metadata->type() == QmlMetadata::Link)
-            type = QStringLiteral("link");
-        else if (metadata->type() == QmlMetadata::FilterSet)
-            type = QStringLiteral("filter_set");
+        QString catalogType = QStringLiteral("filter");
+        if (metadataType == QmlMetadata::Link)
+            catalogType = QStringLiteral("link");
+        else if (metadataType == QmlMetadata::FilterSet)
+            catalogType = QStringLiteral("filter_set");
         filterCatalog.append(QJsonObject{
             {QStringLiteral("id"), id},
             {QStringLiteral("name"), metadata->name()},
-            {QStringLiteral("type"), type},
+            {QStringLiteral("type"), catalogType},
             {QStringLiteral("audio"), metadata->isAudio()},
             {QStringLiteral("clip_only"), metadata->isClipOnly()},
             {QStringLiteral("allow_multiple"), metadata->allowMultiple()},
@@ -378,29 +411,36 @@ QJsonObject McpBridge::projectSnapshot() const
             QJsonArray filters;
             Mlt::Producer producer = timeline->producerForClip(trackIndex, clipIndex);
             if (producer.is_valid() && !producer.is_blank()) {
-                for (int filterIndex = 0; filterIndex < producer.filter_count(); ++filterIndex) {
-                    QScopedPointer<Mlt::Filter> filter(producer.filter(filterIndex));
-                    if (!filter || !filter->is_valid() || filter->get_int(kShotcutHiddenProperty))
+                AttachedFiltersModel attachedFilters;
+                attachedFilters.setProducer(&producer);
+                for (int filterIndex = 0; filterIndex < attachedFilters.rowCount(); ++filterIndex) {
+                    QScopedPointer<Mlt::Service> service(attachedFilters.getService(filterIndex));
+                    if (!service || !service->is_valid())
                         continue;
-                    QString id = QString::fromUtf8(filter->get(kShotcutFilterProperty));
+                    const auto *metadata = attachedFilters.getMetadata(filterIndex);
+                    QString id = metadata ? metadata->uniqueId() : QString();
                     if (id.isEmpty())
-                        id = QString::fromUtf8(filter->get("mlt_service"));
+                        id = QString::fromUtf8(service->get("mlt_service"));
+                    const QString serviceType = metadata && metadata->type() == QmlMetadata::Link
+                                                    ? QStringLiteral("link")
+                                                    : QStringLiteral("filter");
                     QJsonObject parameters;
-                    for (int propertyIndex = 0; propertyIndex < filter->count(); ++propertyIndex) {
-                        const QString name = QString::fromUtf8(filter->get_name(propertyIndex));
+                    for (int propertyIndex = 0; propertyIndex < service->count(); ++propertyIndex) {
+                        const QString name = QString::fromUtf8(service->get_name(propertyIndex));
                         if (name.startsWith(QLatin1Char('_'))
                             || name == QStringLiteral("mlt_service"))
                             continue;
                         if (name.startsWith(QStringLiteral("shotcut:")))
                             continue;
-                        const QString value = QString::fromUtf8(filter->get(propertyIndex));
+                        const QString value = QString::fromUtf8(service->get(propertyIndex));
                         if (value.size() <= 4096)
                             parameters.insert(name, value);
                     }
                     filters.append(QJsonObject{
                         {QStringLiteral("index"), filterIndex},
                         {QStringLiteral("id"), id},
-                        {QStringLiteral("disabled"), filter->get_int("disable") != 0},
+                        {QStringLiteral("type"), serviceType},
+                        {QStringLiteral("disabled"), service->get_int("disable") != 0},
                         {QStringLiteral("parameters"), parameters},
                     });
                 }
