@@ -11,6 +11,8 @@ pub struct OpenProjectRequest {
     /// Allow replacing an unsaved modified project without a save prompt.
     #[serde(default)]
     pub discard_unsaved: bool,
+    /// Revision returned by project_snapshot or editor_status.
+    pub expected_revision: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -24,9 +26,8 @@ pub struct SaveProjectRequest {
     /// Permit replacing an existing explicit destination other than the current project.
     #[serde(default)]
     pub overwrite: bool,
-    /// Reject the save when the editor changed since the last snapshot.
-    #[serde(default)]
-    pub expected_revision: Option<i64>,
+    /// Revision returned by project_snapshot or editor_status.
+    pub expected_revision: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -34,9 +35,8 @@ pub struct HistoryRequest {
     /// Number of undo or redo steps.
     #[serde(default = "default_one")]
     pub steps: u32,
-    /// Reject the operation when the editor changed since the last snapshot.
-    #[serde(default)]
-    pub expected_revision: Option<i64>,
+    /// Revision returned by project_snapshot or editor_status.
+    pub expected_revision: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -49,9 +49,8 @@ pub struct ExportVideoRequest {
     /// Permit replacing an existing target file.
     #[serde(default)]
     pub overwrite: bool,
-    /// Reject the export when the editor changed since the last snapshot.
-    #[serde(default)]
-    pub expected_revision: Option<i64>,
+    /// Revision returned by project_snapshot or editor_status.
+    pub expected_revision: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -268,7 +267,7 @@ mod tests {
 
     #[test]
     fn save_defaults_to_relative_paths() {
-        let request: SaveProjectRequest = serde_json::from_value(serde_json::json!({})).unwrap();
+        let request: SaveProjectRequest = serde_json::from_value(serde_json::json!({"expected_revision": 1})).unwrap();
         assert!(request.relative_paths);
         assert!(!request.overwrite);
     }
