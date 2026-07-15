@@ -270,5 +270,6 @@ mod tests {
     fn save_defaults_to_relative_paths() {
         let request: SaveProjectRequest = serde_json::from_value(serde_json::json!({})).unwrap();
         assert!(request.relative_paths);
+        assert!(!request.overwrite);
     }
 }
