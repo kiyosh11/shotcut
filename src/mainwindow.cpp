@@ -3582,6 +3582,30 @@ void MainWindow::onProducerChanged()
     sourceUpdated();
 }
 
+bool MainWindow::saveProjectAs(const QString &filename, bool withRelativePaths)
+{
+    if (filename.isEmpty())
+        return false;
+
+    m_timelineDock->stopRecording();
+    if (Util::warnIfNotWritable(filename, this, tr("Save XML")))
+        return false;
+    if (filename == m_currentFile)
+        backupPeriodically();
+    if (!saveXML(filename, withRelativePaths)) {
+        showSaveError();
+        return false;
+    }
+
+    QMutexLocker locker(&m_autosaveMutex);
+    m_autosaveFile.reset(new AutoSaveFile(filename));
+    setCurrentFile(filename);
+    setWindowModified(false);
+    m_undoStack->setClean();
+    showStatusMessage(tr("Saved %1").arg(filename));
+    return true;
+}
+
 bool MainWindow::on_actionSave_triggered()
 {
     m_timelineDock->stopRecording();
