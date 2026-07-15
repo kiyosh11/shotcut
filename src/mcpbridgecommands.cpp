@@ -89,9 +89,8 @@ bool McpBridge::checkRevision(const QJsonObject &params, QString &error) const
     }
     const qint64 actual = m_revision;
     if (expected != actual) {
-        error = QStringLiteral("Revision conflict: expected %1, current %2")
-                    .arg(expected)
-                    .arg(actual);
+        error = QStringLiteral("Revision conflict: expected %1, current %2");
+        error = error.arg(expected).arg(actual);
         return false;
     }
     return true;
@@ -150,8 +149,7 @@ McpBridge::RpcResult McpBridge::saveProject(const QJsonObject &params)
         return RpcResult::failure(-32004, QStringLiteral("Save path is outside allowed roots"));
 
     const QString currentPath = normalizedPathForPolicy(m_window.fileName(), true);
-    const bool differentPath
-        = normalized.compare(currentPath, pathCaseSensitivity()) != 0;
+    const bool differentPath = normalized.compare(currentPath, pathCaseSensitivity()) != 0;
     const bool overwrite = params.value(QStringLiteral("overwrite")).toBool(false);
     if (QFileInfo::exists(normalized) && differentPath && !overwrite)
         return RpcResult::failure(-32002, QStringLiteral("Save target exists; overwrite is false"));
@@ -270,7 +268,7 @@ McpBridge::RpcResult McpBridge::startExport(const QJsonObject &params)
     if (!pathAllowed(requiredString(params, QStringLiteral("target")), false, &normalized))
         return RpcResult::failure(-32004, QStringLiteral("Export target is outside allowed roots"));
     if (QFileInfo::exists(normalized) && !params.value(QStringLiteral("overwrite")).toBool(false))
-        return RpcResult::failure(-32002, QStringLiteral("Export target exists; overwrite is false"));
+        return RpcResult::failure(-32002, QStringLiteral("Export target exists; set overwrite"));
     if (JOBS.targetIsInProgress(normalized))
         return RpcResult::failure(-32002, QStringLiteral("An export to this target is active"));
 
@@ -361,8 +359,7 @@ bool McpBridge::validateOperation(const QJsonObject &operation, QString &error) 
     if (type == QStringLiteral("replace_subtitles")) {
         int subtitleTrack = -1;
         const auto *subtitles = m_window.timelineDock()->subtitlesModel();
-        const bool hasTrackIndex
-            = jsonInteger(operation, QStringLiteral("track"), &subtitleTrack);
+        const bool hasTrackIndex = jsonInteger(operation, QStringLiteral("track"), &subtitleTrack);
         if (!hasTrackIndex || subtitleTrack < 0 || subtitleTrack >= subtitles->trackCount()) {
             error = QStringLiteral("subtitle track does not exist");
             return false;
