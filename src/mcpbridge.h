@@ -87,6 +87,7 @@ private:
     QString m_endpoint;
     QStringList m_allowedRoots;
     qint64 m_revision{1};
+    bool m_busy{false};
 };
 
 #endif // MCPBRIDGE_H
