@@ -580,6 +580,7 @@ bool EncodeDock::exportToFile(const QString &target,
     Settings.setEncodePath(output.absolutePath());
     m_outputFilenames = QStringList(target);
 
+    MLT.purgeMemoryPool();
     const int jobsBefore = JOBS.jobs().size();
     int threadCount = QThread::idealThreadCount();
     if (threadCount > 2 && ui->parallelCheckbox->isChecked())
