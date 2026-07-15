@@ -78,6 +78,7 @@ private:
     bool pathAllowed(const QString &path, bool mustExist, QString *normalized = nullptr) const;
     QString normalizedPathForPolicy(const QString &path, bool mustExist) const;
     void loadAllowedRoots();
+    void advanceRevision();
 
     MainWindow &m_window;
     QLocalServer m_server;
