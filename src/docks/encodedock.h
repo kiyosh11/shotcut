@@ -56,6 +56,10 @@ public:
 
     void loadPresetFromProperties(Mlt::Properties &);
     bool isExportInProgress() const;
+    QStringList presetNames() const;
+    bool exportToFile(const QString &target,
+                      const QString &presetName = QString(),
+                      QString *errorMessage = nullptr);
 
 signals:
     void captureStateChanged(bool);
