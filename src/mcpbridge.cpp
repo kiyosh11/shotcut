@@ -30,6 +30,7 @@
 #include <QJsonDocument>
 #include <QLocalSocket>
 #include <QScopedPointer>
+#include <QScopedValueRollback>
 #include <QUndoStack>
 
 namespace {
@@ -217,6 +218,19 @@ void McpBridge::onReadyRead(QLocalSocket *socket)
         return;
     }
 
+    if (m_busy) {
+        writeResponse(socket,
+                      QJsonObject{{QStringLiteral("jsonrpc"), QStringLiteral("2.0")},
+                                  {QStringLiteral("id"), id},
+                                  {QStringLiteral("error"),
+                                   QJsonObject{{QStringLiteral("code"), -32005},
+                                               {QStringLiteral("message"),
+                                                QStringLiteral(
+                                                    "Shotcut is processing another MCP request")}}}});
+        return;
+    }
+
+    QScopedValueRollback<bool> requestGuard(m_busy, true);
     const auto result = dispatch(request.value(QStringLiteral("method")).toString(), params);
     QJsonObject response{{QStringLiteral("jsonrpc"), QStringLiteral("2.0")},
                          {QStringLiteral("id"), id}};
