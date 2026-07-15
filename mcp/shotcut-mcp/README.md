@@ -8,7 +8,7 @@ The Rust server communicates over standard input/output with the MCP client and 
 
 The server exposes these MCP tools:
 
-- editor_status and project_snapshot inspect the live editor, timeline, clips, filters, subtitles, selection, export presets, and undo revision.
+- editor_status and project_snapshot inspect the live editor, timeline, clips, installed clip-filter catalog, attached filters, subtitles, selection, export presets, and undo revision.
 - open_project and save_project load and save Shotcut .mlt or .xml projects.
 - apply_edit_plan validates or applies up to 500 typed operations as one undoable transaction.
 - undo and redo use Shotcut's native history.
