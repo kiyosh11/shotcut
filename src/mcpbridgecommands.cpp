@@ -346,12 +346,20 @@ bool McpBridge::validateOperation(const QJsonObject &operation, QString &error) 
                 return false;
             }
         }
+        if (operation.contains(QStringLiteral("name"))
+            && (!operation.value(QStringLiteral("name")).isString()
+                || operation.value(QStringLiteral("name")).toString().size() > 256)) {
+            error = QStringLiteral("track name must be a string of at most 256 characters");
+            return false;
+        }
         return true;
     }
 
     if (type == QStringLiteral("add_subtitle_track")) {
-        if (requiredString(operation, QStringLiteral("name")).trimmed().isEmpty()) {
-            error = QStringLiteral("subtitle track name is required");
+        const QString name = requiredString(operation, QStringLiteral("name")).trimmed();
+        if (name.isEmpty() || name.size() > 256) {
+            error = QStringLiteral(
+                "subtitle track name must contain between 1 and 256 characters");
             return false;
         }
         return true;
@@ -414,8 +422,27 @@ bool McpBridge::validateOperation(const QJsonObject &operation, QString &error) 
         return false;
     }
 
-    if (type == QStringLiteral("set_track_state"))
+    if (type == QStringLiteral("set_track_state")) {
+        if (operation.contains(QStringLiteral("name"))
+            && (!operation.value(QStringLiteral("name")).isString()
+                || operation.value(QStringLiteral("name")).toString().size() > 256)) {
+            error = QStringLiteral("track name must be a string of at most 256 characters");
+            return false;
+        }
+        static const QStringList booleanStates{
+            QStringLiteral("muted"),
+            QStringLiteral("hidden"),
+            QStringLiteral("composite"),
+            QStringLiteral("locked"),
+        };
+        for (const auto &state : booleanStates) {
+            if (operation.contains(state) && !operation.value(state).isBool()) {
+                error = QStringLiteral("track state '%1' must be boolean").arg(state);
+                return false;
+            }
+        }
         return true;
+    }
     if (m_window.timelineDock()->isTrackLocked(track)) {
         error = QStringLiteral("track %1 is locked").arg(track);
         return false;
@@ -488,10 +515,13 @@ bool McpBridge::validateOperation(const QJsonObject &operation, QString &error) 
         }
     } else if (type == QStringLiteral("add_filter")
                || type == QStringLiteral("set_filter_parameters")) {
-        if (type == QStringLiteral("add_filter")
-            && requiredString(operation, QStringLiteral("filter_id")).isEmpty()) {
-            error = QStringLiteral("filter_id is required");
-            return false;
+        if (type == QStringLiteral("add_filter")) {
+            const QString filterId = requiredString(operation, QStringLiteral("filter_id"));
+            if (filterId.isEmpty() || filterId.size() > 512) {
+                error = QStringLiteral(
+                    "filter_id must contain between 1 and 512 characters");
+                return false;
+            }
         }
         if (type == QStringLiteral("set_filter_parameters")) {
             int filterIndex;
