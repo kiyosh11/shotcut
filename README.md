@@ -14,6 +14,10 @@
 - Features: https://www.shotcut.org/features/
 - Roadmap: https://www.shotcut.org/roadmap/
 
+## AI/MCP integration
+
+This fork includes an opt-in pure-Rust MCP server and a local authenticated Shotcut editing bridge. See [mcp/shotcut-mcp/README.md](mcp/shotcut-mcp/README.md) for capabilities, safeguards, and client configuration.
+
 ## Install
 
 Binaries are regularly built and are available at https://www.shotcut.org/download/.
