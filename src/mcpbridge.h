@@ -86,6 +86,7 @@ private:
     QByteArray m_token;
     QString m_endpoint;
     QStringList m_allowedRoots;
+    qint64 m_revision{1};
 };
 
 #endif // MCPBRIDGE_H
