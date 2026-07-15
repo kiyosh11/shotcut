@@ -50,6 +50,11 @@ QString requiredString(const QJsonObject &object, const QString &name)
     return value.isString() ? value.toString() : QString();
 }
 
+bool hasProjectExtension(const QString &path)
+{
+    return path.endsWith(QStringLiteral(".mlt")) || path.endsWith(QStringLiteral(".xml"));
+}
+
 Qt::CaseSensitivity pathCaseSensitivity()
 {
 #ifdef Q_OS_WIN
@@ -84,9 +89,8 @@ bool McpBridge::checkRevision(const QJsonObject &params, QString &error) const
     }
     const qint64 actual = m_revision;
     if (expected != actual) {
-        error = QStringLiteral("Project revision conflict: expected %1, current %2. Read a new snapshot.")
-                    .arg(expected)
-                    .arg(actual);
+        error = QStringLiteral("Revision conflict: expected %1, current %2");
+        error = error.arg(expected).arg(actual);
         return false;
     }
     return true;
@@ -101,22 +105,17 @@ McpBridge::RpcResult McpBridge::openProject(const QJsonObject &params)
     QString path = requiredString(params, QStringLiteral("path"));
     if (path.isEmpty())
         return RpcResult::failure(-32602, QStringLiteral("path is required"));
-    if (!path.endsWith(QStringLiteral(".mlt"))
-        && !path.endsWith(QStringLiteral(".xml")))
-        return RpcResult::failure(-32602, QStringLiteral("Project extension must be lowercase .mlt or .xml"));
+    if (!hasProjectExtension(path))
+        return RpcResult::failure(-32602, QStringLiteral("Use a lowercase .mlt or .xml extension"));
 
     QString normalized;
     if (!pathAllowed(path, true, &normalized))
-        return RpcResult::failure(-32004,
-                                  QStringLiteral("Project path is outside SHOTCUT_MCP_ALLOWED_ROOTS"));
+        return RpcResult::failure(-32004, QStringLiteral("Project path is outside allowed roots"));
 
     const bool discard = params.value(QStringLiteral("discard_unsaved")).toBool(false);
     const bool wasModified = m_window.isWindowModified();
-    if (wasModified && !discard) {
-        return RpcResult::failure(
-            -32002,
-            QStringLiteral("The current project has unsaved edits; save it or set discard_unsaved"));
-    }
+    if (wasModified && !discard)
+        return RpcResult::failure(-32002, QStringLiteral("Save or discard current unsaved edits"));
 
     if (discard)
         m_window.setWindowModified(false);
@@ -125,7 +124,7 @@ McpBridge::RpcResult McpBridge::openProject(const QJsonObject &params)
     if (opened.compare(normalized, pathCaseSensitivity()) != 0) {
         if (wasModified)
             m_window.setWindowModified(true);
-        return RpcResult::failure(-32003, QStringLiteral("Shotcut did not open the requested project"));
+        return RpcResult::failure(-32003, QStringLiteral("Shotcut did not open that project"));
     }
     return RpcResult::success(editorStatus());
 }
@@ -142,23 +141,18 @@ McpBridge::RpcResult McpBridge::saveProject(const QJsonObject &params)
         if (path.isEmpty() || path == m_window.untitledFileName())
             return RpcResult::failure(-32602, QStringLiteral("An absolute save path is required"));
     }
-    if (!path.endsWith(QStringLiteral(".mlt"))
-        && !path.endsWith(QStringLiteral(".xml")))
-        return RpcResult::failure(-32602, QStringLiteral("Save path must end in lowercase .mlt or .xml"));
+    if (!hasProjectExtension(path))
+        return RpcResult::failure(-32602, QStringLiteral("Use a lowercase .mlt or .xml save path"));
 
     QString normalized;
     if (!pathAllowed(path, false, &normalized))
-        return RpcResult::failure(-32004,
-                                  QStringLiteral("Save path is outside SHOTCUT_MCP_ALLOWED_ROOTS"));
+        return RpcResult::failure(-32004, QStringLiteral("Save path is outside allowed roots"));
 
     const QString currentPath = normalizedPathForPolicy(m_window.fileName(), true);
-    if (QFileInfo::exists(normalized)
-        && normalized.compare(currentPath, pathCaseSensitivity()) != 0
-        && !params.value(QStringLiteral("overwrite")).toBool(false)) {
-        return RpcResult::failure(
-            -32002,
-            QStringLiteral("Save target exists and overwrite is false"));
-    }
+    const bool differentPath = normalized.compare(currentPath, pathCaseSensitivity()) != 0;
+    const bool overwrite = params.value(QStringLiteral("overwrite")).toBool(false);
+    if (QFileInfo::exists(normalized) && differentPath && !overwrite)
+        return RpcResult::failure(-32002, QStringLiteral("Save target exists; overwrite is false"));
 
     const bool relativePaths = params.value(QStringLiteral("relative_paths")).toBool(true);
     if (!m_window.saveProjectAs(normalized, relativePaths))
@@ -174,13 +168,11 @@ McpBridge::RpcResult McpBridge::applyEditPlan(const QJsonObject &params)
 
     QString label = requiredString(params, QStringLiteral("label")).trimmed();
     if (label.isEmpty() || label.size() > 120)
-        return RpcResult::failure(-32602,
-                                  QStringLiteral("label must contain between 1 and 120 characters"));
+        return RpcResult::failure(-32602, QStringLiteral("label must be 1 to 120 characters"));
 
     const auto operations = params.value(QStringLiteral("operations")).toArray();
     if (operations.isEmpty() || operations.size() > 500)
-        return RpcResult::failure(-32602,
-                                  QStringLiteral("operations must contain between 1 and 500 items"));
+        return RpcResult::failure(-32602, QStringLiteral("operations must contain 1 to 500 items"));
 
     for (int index = 0; index < operations.size(); ++index) {
         if (!operations.at(index).isObject())
@@ -226,10 +218,12 @@ McpBridge::RpcResult McpBridge::applyEditPlan(const QJsonObject &params)
     if (applied != operations.size()) {
         if (stack->index() != beforeRevision && stack->canUndo())
             stack->undo();
-        return RpcResult::failure(
-            -32003,
-            QStringLiteral("Edit plan rolled back after operation %1: %2").arg(applied).arg(applyError),
-            QJsonObject{{QStringLiteral("revision"), static_cast<double>(m_revision)}});
+        const QString message = QStringLiteral("Edit plan rolled back at operation %1: %2")
+                                    .arg(applied)
+                                    .arg(applyError);
+        QJsonObject data;
+        data.insert(QStringLiteral("revision"), static_cast<double>(m_revision));
+        return RpcResult::failure(-32003, message, data);
     }
 
     return RpcResult::success(QJsonObject{
@@ -272,13 +266,11 @@ McpBridge::RpcResult McpBridge::startExport(const QJsonObject &params)
 
     QString normalized;
     if (!pathAllowed(requiredString(params, QStringLiteral("target")), false, &normalized))
-        return RpcResult::failure(-32004,
-                                  QStringLiteral("Export target is outside SHOTCUT_MCP_ALLOWED_ROOTS"));
+        return RpcResult::failure(-32004, QStringLiteral("Export target is outside allowed roots"));
     if (QFileInfo::exists(normalized) && !params.value(QStringLiteral("overwrite")).toBool(false))
-        return RpcResult::failure(-32002,
-                                  QStringLiteral("Export target exists and overwrite is false"));
+        return RpcResult::failure(-32002, QStringLiteral("Export target exists; set overwrite"));
     if (JOBS.targetIsInProgress(normalized))
-        return RpcResult::failure(-32002, QStringLiteral("An export to this target is already active"));
+        return RpcResult::failure(-32002, QStringLiteral("An export to this target is active"));
 
     QString error;
     const QString preset = params.value(QStringLiteral("preset")).toString();
@@ -358,8 +350,7 @@ bool McpBridge::validateOperation(const QJsonObject &operation, QString &error) 
     if (type == QStringLiteral("add_subtitle_track")) {
         const QString name = requiredString(operation, QStringLiteral("name")).trimmed();
         if (name.isEmpty() || name.size() > 256) {
-            error = QStringLiteral(
-                "subtitle track name must contain between 1 and 256 characters");
+            error = QStringLiteral("subtitle track name must be 1 to 256 characters");
             return false;
         }
         return true;
@@ -368,8 +359,8 @@ bool McpBridge::validateOperation(const QJsonObject &operation, QString &error) 
     if (type == QStringLiteral("replace_subtitles")) {
         int subtitleTrack = -1;
         const auto *subtitles = m_window.timelineDock()->subtitlesModel();
-        if (!jsonInteger(operation, QStringLiteral("track"), &subtitleTrack)
-            || subtitleTrack < 0 || subtitleTrack >= subtitles->trackCount()) {
+        const bool hasTrackIndex = jsonInteger(operation, QStringLiteral("track"), &subtitleTrack);
+        if (!hasTrackIndex || subtitleTrack < 0 || subtitleTrack >= subtitles->trackCount()) {
             error = QStringLiteral("subtitle track does not exist");
             return false;
         }
@@ -390,20 +381,24 @@ bool McpBridge::validateOperation(const QJsonObject &operation, QString &error) 
             const auto startValue = item.value(QStringLiteral("start_ms"));
             const auto endValue = item.value(QStringLiteral("end_ms"));
             constexpr double maximumExactJsonInteger = 9007199254740991.0;
-            if (!startValue.isDouble() || !endValue.isDouble()
-                || !qIsFinite(startValue.toDouble()) || !qIsFinite(endValue.toDouble())
-                || qAbs(startValue.toDouble()) > maximumExactJsonInteger
-                || qAbs(endValue.toDouble()) > maximumExactJsonInteger) {
+            const double startNumber = startValue.toDouble();
+            const double endNumber = endValue.toDouble();
+            const bool finiteTimes = startValue.isDouble() && endValue.isDouble()
+                                     && qIsFinite(startNumber) && qIsFinite(endNumber);
+            const bool inRange = qAbs(startNumber) <= maximumExactJsonInteger
+                                 && qAbs(endNumber) <= maximumExactJsonInteger;
+            if (!finiteTimes || !inRange) {
                 error = QStringLiteral("subtitle times must be exact finite integers");
                 return false;
             }
-            const qint64 start = static_cast<qint64>(startValue.toDouble());
-            const qint64 end = static_cast<qint64>(endValue.toDouble());
-            if (startValue.toDouble() != static_cast<double>(start)
-                || endValue.toDouble() != static_cast<double>(end) || start < 0 || end <= start
-                || start < previousEnd || !item.value(QStringLiteral("text")).isString()) {
-                error = QStringLiteral(
-                    "subtitles must be sorted, non-overlapping, and have integer start_ms < end_ms");
+            const qint64 start = static_cast<qint64>(startNumber);
+            const qint64 end = static_cast<qint64>(endNumber);
+            const bool integerTimes = startNumber == static_cast<double>(start)
+                                      && endNumber == static_cast<double>(end);
+            const bool orderedTimes = start >= 0 && end > start && start >= previousEnd;
+            const bool hasText = item.value(QStringLiteral("text")).isString();
+            if (!integerTimes || !orderedTimes || !hasText) {
+                error = QStringLiteral("subtitles must be sorted, non-overlapping integer ranges");
                 return false;
             }
             previousEnd = end;
@@ -490,8 +485,7 @@ bool McpBridge::validateOperation(const QJsonObject &operation, QString &error) 
             error = QStringLiteral("trim edge or delta_frames is invalid");
             return false;
         }
-    } else if (type == QStringLiteral("split_clip")
-               || type == QStringLiteral("add_transition")) {
+    } else if (type == QStringLiteral("split_clip") || type == QStringLiteral("add_transition")) {
         int position;
         if (!jsonInteger(operation, QStringLiteral("position"), &position) || position < 0) {
             error = QStringLiteral("position must be a non-negative frame");
@@ -518,8 +512,7 @@ bool McpBridge::validateOperation(const QJsonObject &operation, QString &error) 
         if (type == QStringLiteral("add_filter")) {
             const QString filterId = requiredString(operation, QStringLiteral("filter_id"));
             if (filterId.isEmpty() || filterId.size() > 512) {
-                error = QStringLiteral(
-                    "filter_id must contain between 1 and 512 characters");
+                error = QStringLiteral("filter_id must be 1 to 512 characters");
                 return false;
             }
         }
@@ -555,8 +548,7 @@ bool McpBridge::validateOperation(const QJsonObject &operation, QString &error) 
             }
             if (value.isDouble()
                 && (!qIsFinite(value.toDouble()) || qAbs(value.toDouble()) > 1.0e12)) {
-                error = QStringLiteral("filter parameter '%1' is outside the numeric limit")
-                            .arg(name);
+                error = QStringLiteral("filter parameter '%1' exceeds numeric limit").arg(name);
                 return false;
             }
             if (value.isString()) {
@@ -577,14 +569,17 @@ bool McpBridge::validateOperation(const QJsonObject &operation, QString &error) 
     }
     return true;
 }
+
 bool McpBridge::applyOperation(const QJsonObject &operation, QString &error)
 {
     const QString type = operation.value(QStringLiteral("op")).toString();
-    if (type == QStringLiteral("add_filter")
-        || type == QStringLiteral("set_filter_parameters"))
+    const bool filterOperation = type == QStringLiteral("add_filter")
+                                 || type == QStringLiteral("set_filter_parameters");
+    if (filterOperation)
         return applyFilterOperation(operation, error);
-    if (type == QStringLiteral("add_subtitle_track")
-        || type == QStringLiteral("replace_subtitles"))
+    const bool subtitleOperation = type == QStringLiteral("add_subtitle_track")
+                                   || type == QStringLiteral("replace_subtitles");
+    if (subtitleOperation)
         return applySubtitleOperation(operation, error);
     return applyTimelineOperation(operation, error);
 }

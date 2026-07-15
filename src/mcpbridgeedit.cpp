@@ -34,8 +34,9 @@ bool McpBridge::applyTimelineOperation(const QJsonObject &operation, QString &er
         int newIndex = oldCount;
         if (operation.value(QStringLiteral("index")).isDouble()) {
             newIndex = operation.value(QStringLiteral("index")).toInt();
-            stack->push(new Timeline::InsertTrackCommand(
-                *model, newIndex, video ? VideoTrackType : AudioTrackType));
+            stack->push(new Timeline::InsertTrackCommand(*model,
+                                                         newIndex,
+                                                         video ? VideoTrackType : AudioTrackType));
         } else {
             stack->push(new Timeline::AddTrackCommand(*model, video));
         }
@@ -89,11 +90,9 @@ bool McpBridge::applyTimelineOperation(const QJsonObject &operation, QString &er
         }
         const int toTrack = operation.value(QStringLiteral("to_track")).toInt();
         const int positionDelta = operation.value(QStringLiteral("position")).toInt() - info->start;
-        auto *command = new Timeline::MoveClipCommand(
-            *timeline,
-            toTrack - track,
-            positionDelta,
-            operation.value(QStringLiteral("ripple")).toBool());
+        const bool ripple = operation.value(QStringLiteral("ripple")).toBool();
+        auto *command
+            = new Timeline::MoveClipCommand(*timeline, toTrack - track, positionDelta, ripple);
         command->addClip(track, clip);
         stack->push(command);
         return true;
@@ -107,15 +106,23 @@ bool McpBridge::applyTimelineOperation(const QJsonObject &operation, QString &er
                 error = QStringLiteral("trim-in exceeds available clip media or timeline space");
                 return false;
             }
-            stack->push(new Timeline::TrimClipInCommand(
-                *model, *timeline->markersModel(), track, clip, delta, ripple));
+            stack->push(new Timeline::TrimClipInCommand(*model,
+                                                        *timeline->markersModel(),
+                                                        track,
+                                                        clip,
+                                                        delta,
+                                                        ripple));
         } else {
             if (!model->trimClipOutValid(track, clip, delta, ripple)) {
                 error = QStringLiteral("trim-out exceeds available clip media or timeline space");
                 return false;
             }
-            stack->push(new Timeline::TrimClipOutCommand(
-                *model, *timeline->markersModel(), track, clip, delta, ripple));
+            stack->push(new Timeline::TrimClipOutCommand(*model,
+                                                         *timeline->markersModel(),
+                                                         track,
+                                                         clip,
+                                                         delta,
+                                                         ripple));
         }
         return true;
     }
@@ -127,15 +134,17 @@ bool McpBridge::applyTimelineOperation(const QJsonObject &operation, QString &er
             error = QStringLiteral("split position must be inside the clip");
             return false;
         }
-        stack->push(new Timeline::SplitCommand(
-            *model, std::vector<int>{track}, std::vector<int>{clip}, position));
+        stack->push(new Timeline::SplitCommand(*model,
+                                               std::vector<int>{track},
+                                               std::vector<int>{clip},
+                                               position));
         return true;
     }
 
     if (type == QStringLiteral("remove_clip")) {
         if (operation.value(QStringLiteral("ripple")).toBool()) {
-            stack->push(new Timeline::RemoveCommand(
-                *model, *timeline->markersModel(), track, clip));
+            auto *markers = timeline->markersModel();
+            stack->push(new Timeline::RemoveCommand(*model, *markers, track, clip));
         } else {
             stack->push(new Timeline::LiftCommand(*model, track, clip));
         }
@@ -143,8 +152,8 @@ bool McpBridge::applyTimelineOperation(const QJsonObject &operation, QString &er
     }
 
     if (type == QStringLiteral("set_clip_gain")) {
-        stack->push(new Timeline::ChangeGainCommand(
-            *model, track, clip, operation.value(QStringLiteral("gain")).toDouble()));
+        const double gain = operation.value(QStringLiteral("gain")).toDouble();
+        stack->push(new Timeline::ChangeGainCommand(*model, track, clip, gain));
         return true;
     }
 
@@ -158,12 +167,9 @@ bool McpBridge::applyTimelineOperation(const QJsonObject &operation, QString &er
     }
 
     if (type == QStringLiteral("add_transition")) {
-        stack->push(new Timeline::AddTransitionCommand(
-            *timeline,
-            track,
-            clip,
-            operation.value(QStringLiteral("position")).toInt(),
-            operation.value(QStringLiteral("ripple")).toBool()));
+        const int position = operation.value(QStringLiteral("position")).toInt();
+        const bool ripple = operation.value(QStringLiteral("ripple")).toBool();
+        stack->push(new Timeline::AddTransitionCommand(*timeline, track, clip, position, ripple));
         return true;
     }
 
@@ -187,9 +193,10 @@ bool McpBridge::applyTimelineOperation(const QJsonObject &operation, QString &er
                 *model, track, operation.value(QStringLiteral("composite")).toBool()));
         if (operation.value(QStringLiteral("locked")).isBool()
             && operation.value(QStringLiteral("locked")).toBool()
-                   != model->data(index, MultitrackModel::IsLockedRole).toBool())
-            stack->push(new Timeline::LockTrackCommand(
-                *model, track, operation.value(QStringLiteral("locked")).toBool()));
+                   != model->data(index, MultitrackModel::IsLockedRole).toBool()) {
+            const bool locked = operation.value(QStringLiteral("locked")).toBool();
+            stack->push(new Timeline::LockTrackCommand(*model, track, locked));
+        }
         return true;
     }
 

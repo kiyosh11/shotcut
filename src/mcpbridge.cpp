@@ -94,9 +94,7 @@ McpBridge::McpBridge(MainWindow &window, QObject *parent)
     connect(m_window.undoStack(), &QUndoStack::indexChanged, this, [this](int) {
         advanceRevision();
     });
-    connect(&m_window, &MainWindow::producerOpened, this, [this](bool) {
-        advanceRevision();
-    });
+    connect(&m_window, &MainWindow::producerOpened, this, [this](bool) { advanceRevision(); });
 }
 
 void McpBridge::advanceRevision()
@@ -221,14 +219,14 @@ void McpBridge::onReadyRead(QLocalSocket *socket)
     }
 
     if (m_busy) {
+        const QJsonObject busyError{
+            {QStringLiteral("code"), -32005},
+            {QStringLiteral("message"), QStringLiteral("Shotcut is processing another MCP request")},
+        };
         writeResponse(socket,
                       QJsonObject{{QStringLiteral("jsonrpc"), QStringLiteral("2.0")},
                                   {QStringLiteral("id"), id},
-                                  {QStringLiteral("error"),
-                                   QJsonObject{{QStringLiteral("code"), -32005},
-                                               {QStringLiteral("message"),
-                                                QStringLiteral(
-                                                    "Shotcut is processing another MCP request")}}}});
+                                  {QStringLiteral("error"), busyError}});
         return;
     }
 
@@ -296,11 +294,13 @@ QJsonObject McpBridge::editorStatus() const
     auto *metadataModel = m_window.filterController()->metadataModel();
     for (int index = 0; index < metadataModel->sourceRowCount(); ++index) {
         const auto *metadata = metadataModel->getFromSource(index);
-        if (!metadata || metadata->isHidden() || metadata->isDeprecated()
-            || metadata->isTrackOnly() || metadata->isOutputOnly()
-            || (metadata->type() != QmlMetadata::Filter
-                && metadata->type() != QmlMetadata::Link
-                && metadata->type() != QmlMetadata::FilterSet)) {
+        if (!metadata || metadata->isHidden() || metadata->isDeprecated() || metadata->isTrackOnly()
+            || metadata->isOutputOnly()) {
+            continue;
+        }
+        const auto type = metadata->type();
+        if (type != QmlMetadata::Filter && type != QmlMetadata::Link
+            && type != QmlMetadata::FilterSet) {
             continue;
         }
         const QString id = metadata->uniqueId();
@@ -360,8 +360,7 @@ QJsonObject McpBridge::projectSnapshot() const
                  model->data(index, MultitrackModel::ResourceRole).toString()},
                 {QStringLiteral("service"),
                  model->data(index, MultitrackModel::ServiceRole).toString()},
-                {QStringLiteral("blank"),
-                 model->data(index, MultitrackModel::IsBlankRole).toBool()},
+                {QStringLiteral("blank"), model->data(index, MultitrackModel::IsBlankRole).toBool()},
                 {QStringLiteral("transition"),
                  model->data(index, MultitrackModel::IsTransitionRole).toBool()},
                 {QStringLiteral("start"), model->data(index, MultitrackModel::StartRole).toInt()},
@@ -370,8 +369,7 @@ QJsonObject McpBridge::projectSnapshot() const
                 {QStringLiteral("in"), model->data(index, MultitrackModel::InPointRole).toInt()},
                 {QStringLiteral("out"), model->data(index, MultitrackModel::OutPointRole).toInt()},
                 {QStringLiteral("speed"), model->data(index, MultitrackModel::SpeedRole).toDouble()},
-                {QStringLiteral("fade_in"),
-                 model->data(index, MultitrackModel::FadeInRole).toInt()},
+                {QStringLiteral("fade_in"), model->data(index, MultitrackModel::FadeInRole).toInt()},
                 {QStringLiteral("fade_out"),
                  model->data(index, MultitrackModel::FadeOutRole).toInt()},
                 {QStringLiteral("gain"), model->data(index, MultitrackModel::GainRole).toDouble()},
@@ -390,8 +388,10 @@ QJsonObject McpBridge::projectSnapshot() const
                     QJsonObject parameters;
                     for (int propertyIndex = 0; propertyIndex < filter->count(); ++propertyIndex) {
                         const QString name = QString::fromUtf8(filter->get_name(propertyIndex));
-                        if (name.startsWith(QLatin1Char('_')) || name == QStringLiteral("mlt_service")
-                            || name.startsWith(QStringLiteral("shotcut:")))
+                        if (name.startsWith(QLatin1Char('_'))
+                            || name == QStringLiteral("mlt_service"))
+                            continue;
+                        if (name.startsWith(QStringLiteral("shotcut:")))
                             continue;
                         const QString value = QString::fromUtf8(filter->get(propertyIndex));
                         if (value.size() <= 4096)
@@ -428,8 +428,11 @@ QJsonObject McpBridge::projectSnapshot() const
 
     QJsonArray selection;
     for (const auto &point : timeline->selection()) {
-        selection.append(QJsonObject{{QStringLiteral("track"), point.y()},
-                                     {QStringLiteral("clip"), point.x()}});
+        const QJsonObject selectedClip{
+            {QStringLiteral("track"), point.y()},
+            {QStringLiteral("clip"), point.x()},
+        };
+        selection.append(selectedClip);
     }
 
     QJsonArray subtitleTracks;
@@ -439,11 +442,13 @@ QJsonObject McpBridge::projectSnapshot() const
         QJsonArray items;
         for (int itemIndex = 0; itemIndex < subtitles->itemCount(trackIndex); ++itemIndex) {
             const auto &item = subtitles->getItem(trackIndex, itemIndex);
+            const qsizetype textSize = static_cast<qsizetype>(item.text.size());
+            const QString subtitleText = QString::fromUtf8(item.text.data(), textSize);
             items.append(QJsonObject{
                 {QStringLiteral("index"), itemIndex},
                 {QStringLiteral("start_ms"), static_cast<double>(item.start)},
                 {QStringLiteral("end_ms"), static_cast<double>(item.end)},
-                {QStringLiteral("text"), QString::fromUtf8(item.text.data(), static_cast<qsizetype>(item.text.size()))},
+                {QStringLiteral("text"), subtitleText},
             });
         }
         subtitleTracks.append(QJsonObject{
@@ -474,10 +479,17 @@ QJsonObject McpBridge::projectSnapshot() const
 QJsonArray McpBridge::exportJobs(const QString &target) const
 {
     QJsonArray result;
+    QString requestedTarget;
+    if (!target.isEmpty())
+        requestedTarget = QFileInfo(target).absoluteFilePath();
     for (auto *job : JOBS.jobs()) {
-        if (!job || (!target.isEmpty() && QFileInfo(job->target()).absoluteFilePath()
-                                              != QFileInfo(target).absoluteFilePath()))
+        if (!job)
             continue;
+        if (!requestedTarget.isEmpty()) {
+            const QString jobTarget = QFileInfo(job->target()).absoluteFilePath();
+            if (jobTarget != requestedTarget)
+                continue;
+        }
         result.append(QJsonObject{
             {QStringLiteral("label"), job->label()},
             {QStringLiteral("target"), job->target()},

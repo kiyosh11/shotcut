@@ -47,8 +47,8 @@ bool McpBridge::applySubtitleOperation(const QJsonObject &operation, QString &er
             item.value(QStringLiteral("text")).toString().toUtf8().toStdString(),
         });
     }
-    stack->push(new Subtitles::OverwriteSubtitlesCommand(
-        *subtitles, operation.value(QStringLiteral("track")).toInt(), items));
+    const int track = operation.value(QStringLiteral("track")).toInt();
+    stack->push(new Subtitles::OverwriteSubtitlesCommand(*subtitles, track, items));
     return true;
 }
 
@@ -87,11 +87,8 @@ bool McpBridge::applyFilterOperation(const QJsonObject &operation, QString &erro
                                  error);
 }
 
-bool McpBridge::applyFilterParameters(int track,
-                                      int clip,
-                                      int filterIndex,
-                                      const QJsonObject &parameters,
-                                      QString &error)
+bool McpBridge::applyFilterParameters(
+    int track, int clip, int filterIndex, const QJsonObject &parameters, QString &error)
 {
     Mlt::Producer producer = m_window.timelineDock()->producerForClip(track, clip);
     auto *controller = m_window.filterController();
