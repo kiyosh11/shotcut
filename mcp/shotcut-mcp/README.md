@@ -49,9 +49,29 @@ Optional variables:
 
 If allowed roots are omitted, Shotcut permits the current user's home directory. An output file does not need to exist, but its parent directory must already exist inside an allowed root.
 
+## Build and install
+
+The sidecar is locked to the dependencies in `Cargo.lock` and the Rust version in `rust-toolchain.toml`. To build only the sidecar from this directory:
+
+```sh
+cargo build --release --locked
+```
+
+To build and install it together with a custom Shotcut build, enable the CMake option:
+
+```sh
+cmake -S /path/to/this/fork -B /path/to/build -DSHOTCUT_BUILD_MCP_SERVER=ON
+cmake --build /path/to/build
+cmake --install /path/to/build
+```
+
+`SHOTCUT_BUILD_MCP_SERVER` defaults to `OFF`. When enabled, CMake requires an existing `cargo` executable and fails clearly if it cannot find one. It never installs Rust, substitutes a prebuilt sidecar, or downloads an upstream Shotcut binary. Cargo can fetch the exact locked crates through its configured registry; use a vendored or offline Cargo configuration when builds must not access the network.
+
+The custom CMake target builds into `<build>/mcp-target/release`. Installation places the sidecar beside the Shotcut executable on Windows, in the application bundle on macOS, or in the configured binary directory on Unix.
+
 ## MCP client configuration
 
-Build the shotcut-mcp binary from this Cargo package when you are ready to compile the fork. Then copy [codex.example.toml](codex.example.toml) into the relevant part of your user or project Codex configuration and replace the command path.
+Copy [codex.example.toml](codex.example.toml) into the relevant part of your user or project Codex configuration and replace the command with the absolute path to the custom `shotcut-mcp` binary produced from this fork. Official Shotcut binaries do not include the local MCP bridge and cannot be used as a substitute.
 
 The same standard-I/O MCP server can be registered with another MCP client using that client's local-server configuration. It needs SHOTCUT_MCP_TOKEN, and it optionally needs the endpoint and timeout variables.
 
@@ -75,4 +95,4 @@ Filter operations use Shotcut filter IDs from the installed build. Media analysi
 
 ## Development status
 
-The source integration is complete on this branch, but it has intentionally not been built or launched while being prepared. Before distributing it, compile Shotcut and this Cargo package in a normal development environment and run the focused Rust, bridge, timeline, save, and export checks.
+GitHub Actions checks Rust formatting, Clippy warnings, and tests against the committed lockfile and pinned toolchain. The optional CMake target provides a reproducible build/install path without installing toolchains. Full Shotcut bridge, timeline, save, and export behavior still requires platform-specific integration and runtime testing before distribution.

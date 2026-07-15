@@ -1,6 +1,5 @@
 use std::{
-    env,
-    io,
+    env, io,
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
@@ -12,13 +11,19 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use thiserror::Error;
 use tokio::{
-    io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader},
+    io::{AsyncBufRead, AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader},
     time,
 };
 
 const DEFAULT_ENDPOINT: &str = "shotcut-mcp";
 const DEFAULT_TIMEOUT_SECONDS: u64 = 300;
 const MAX_MESSAGE_BYTES: usize = 16 * 1024 * 1024;
+
+fn framed_message_fits(payload_bytes: usize, max_bytes: usize) -> bool {
+    payload_bytes
+        .checked_add(1)
+        .is_some_and(|framed_bytes| framed_bytes <= max_bytes)
+}
 
 #[derive(Debug, Error)]
 pub enum BridgeError {
@@ -122,7 +127,7 @@ impl BridgeClient {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let request = self.build_request(id, method, params)?;
         let payload = serde_json::to_vec(&request)?;
-        if payload.len() > MAX_MESSAGE_BYTES {
+        if !framed_message_fits(payload.len(), MAX_MESSAGE_BYTES) {
             return Err(BridgeError::Configuration(format!(
                 "request exceeds the {MAX_MESSAGE_BYTES}-byte bridge limit"
             )));
@@ -143,7 +148,7 @@ impl BridgeClient {
                 "jsonrpc must equal 2.0".into(),
             ));
         }
-        if response.id != Value::from(id) {
+        if response.id != id {
             return Err(BridgeError::InvalidResponse(format!(
                 "response id {} does not match request id {id}",
                 response.id
@@ -161,12 +166,12 @@ impl BridgeClient {
             .ok_or_else(|| BridgeError::InvalidResponse("missing result and error".into()))
     }
 
-    fn build_request<P>(
+    fn build_request<'a, P>(
         &self,
         id: u64,
-        method: &str,
+        method: &'a str,
         params: P,
-    ) -> Result<RpcRequest<'_>, BridgeError>
+    ) -> Result<RpcRequest<'a>, BridgeError>
     where
         P: Serialize,
     {
@@ -191,6 +196,44 @@ impl BridgeClient {
     }
 }
 
+async fn read_bounded_line<R>(reader: &mut R, max_bytes: usize) -> io::Result<String>
+where
+    R: AsyncBufRead + Unpin,
+{
+    let mut response = Vec::new();
+    loop {
+        let buffer = reader.fill_buf().await?;
+        if buffer.is_empty() {
+            let message = if response.is_empty() {
+                "Shotcut closed the bridge without a response"
+            } else {
+                "Shotcut bridge response ended before the line terminator"
+            };
+            return Err(io::Error::new(io::ErrorKind::UnexpectedEof, message));
+        }
+
+        let newline = buffer.iter().position(|byte| *byte == b'\n');
+        let chunk_len = newline.map_or(buffer.len(), |index| index + 1);
+        if chunk_len > max_bytes.saturating_sub(response.len()) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Shotcut bridge response is too large",
+            ));
+        }
+        response.extend_from_slice(&buffer[..chunk_len]);
+        reader.consume(chunk_len);
+        if newline.is_some() {
+            break;
+        }
+    }
+
+    response.pop();
+    if response.last() == Some(&b'\r') {
+        response.pop();
+    }
+    String::from_utf8(response).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+}
+
 async fn exchange<S>(stream: S, payload: &[u8]) -> io::Result<String>
 where
     S: AsyncRead + AsyncWrite + Unpin,
@@ -199,29 +242,7 @@ where
     stream.get_mut().write_all(payload).await?;
     stream.get_mut().write_all(b"\n").await?;
     stream.get_mut().flush().await?;
-
-    let mut response = Vec::new();
-    stream.read_until(b'\n', &mut response).await?;
-    if response.is_empty() {
-        return Err(io::Error::new(
-            io::ErrorKind::UnexpectedEof,
-            "Shotcut closed the bridge without a response",
-        ));
-    }
-    if response.len() > MAX_MESSAGE_BYTES {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "Shotcut bridge response is too large",
-        ));
-    }
-    if response.last() == Some(&b'\n') {
-        response.pop();
-    }
-    if response.last() == Some(&b'\r') {
-        response.pop();
-    }
-    String::from_utf8(response)
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+    read_bounded_line(&mut stream, MAX_MESSAGE_BYTES).await
 }
 
 #[cfg(unix)]
@@ -259,9 +280,8 @@ async fn transact(endpoint: &str, payload: &[u8]) -> io::Result<String> {
             Err(error) => return Err(error),
         }
     }
-    Err(last_error.unwrap_or_else(|| {
-        io::Error::new(io::ErrorKind::TimedOut, "named pipe remained busy")
-    }))
+    Err(last_error
+        .unwrap_or_else(|| io::Error::new(io::ErrorKind::TimedOut, "named pipe remained busy")))
 }
 
 #[cfg(not(any(unix, windows)))]
@@ -287,7 +307,8 @@ mod tests {
 
     #[test]
     fn auth_token_is_injected_into_params() {
-        let request = client()
+        let client = client();
+        let request = client
             .build_request(7, "editor.status", serde_json::json!({}))
             .unwrap();
         assert_eq!(request.id, 7);
@@ -297,5 +318,61 @@ mod tests {
     #[test]
     fn non_object_params_are_rejected() {
         assert!(client().build_request(1, "bad", vec![1, 2]).is_err());
+    }
+
+    #[test]
+    fn request_limit_includes_newline_framing() {
+        assert!(framed_message_fits(
+            MAX_MESSAGE_BYTES - 1,
+            MAX_MESSAGE_BYTES
+        ));
+        assert!(!framed_message_fits(MAX_MESSAGE_BYTES, MAX_MESSAGE_BYTES));
+        assert!(!framed_message_fits(usize::MAX, MAX_MESSAGE_BYTES));
+    }
+
+    async fn read_fixture(input: &[u8], limit: usize) -> io::Result<String> {
+        let (mut writer, reader) = tokio::io::duplex(input.len().max(1));
+        writer.write_all(input).await?;
+        writer.shutdown().await?;
+        drop(writer);
+        read_bounded_line(&mut BufReader::new(reader), limit).await
+    }
+
+    #[tokio::test]
+    async fn bounded_reader_accepts_a_complete_line_at_the_limit() {
+        let response = read_fixture(b"123456\r\n", 8).await.unwrap();
+        assert_eq!(response, "123456");
+    }
+
+    #[tokio::test]
+    async fn bounded_reader_rejects_an_oversized_line() {
+        let error = read_fixture(b"12345678\n", 8).await.unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[tokio::test]
+    async fn bounded_reader_rejects_a_partial_line_at_eof() {
+        let error = read_fixture(b"partial", 8).await.unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::UnexpectedEof);
+    }
+
+    #[tokio::test]
+    async fn exchange_uses_newline_framing() {
+        let (client_stream, server_stream) = tokio::io::duplex(256);
+        let server = tokio::spawn(async move {
+            let mut server = BufReader::new(server_stream);
+            let mut request = String::new();
+            server.read_line(&mut request).await.unwrap();
+            assert_eq!(request, "{\"ping\":true}\n");
+            server
+                .get_mut()
+                .write_all(b"{\"ok\":true}\r\n")
+                .await
+                .unwrap();
+        });
+
+        let response = exchange(client_stream, b"{\"ping\":true}").await.unwrap();
+        server.await.unwrap();
+        assert_eq!(response, "{\"ok\":true}");
     }
 }
