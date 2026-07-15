@@ -17,7 +17,7 @@ use tokio::{
 };
 
 const DEFAULT_ENDPOINT: &str = "shotcut-mcp";
-const DEFAULT_TIMEOUT_SECONDS: u64 = 30;
+const DEFAULT_TIMEOUT_SECONDS: u64 = 300;
 const MAX_MESSAGE_BYTES: usize = 16 * 1024 * 1024;
 
 #[derive(Debug, Error)]
