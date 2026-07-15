@@ -3598,14 +3598,19 @@ bool MainWindow::saveProjectAs(const QString &filename, bool withRelativePaths)
     }
 
     QMutexLocker locker(&m_autosaveMutex);
-    m_autosaveFile.reset(new AutoSaveFile(filename));
+    if (m_autosaveFile)
+        m_autosaveFile->changeManagedFile(filename);
+    else
+        m_autosaveFile.reset(new AutoSaveFile(filename));
+    Settings.setSavePath(QFileInfo(filename).absolutePath());
     setCurrentFile(filename);
     setWindowModified(false);
+    resetSourceUpdated();
     m_undoStack->setClean();
+    m_recentDock->add(filename);
     showStatusMessage(tr("Saved %1").arg(filename));
     return true;
 }
-
 bool MainWindow::on_actionSave_triggered()
 {
     m_timelineDock->stopRecording();
