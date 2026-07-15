@@ -11,6 +11,7 @@
 #define MCPBRIDGE_H
 
 #include <QHash>
+#include <QJsonArray>
 #include <QJsonObject>
 #include <QJsonValue>
 #include <QLocalServer>
@@ -61,7 +62,11 @@ private:
     RpcResult startExport(const QJsonObject &params);
     RpcResult exportStatus(const QJsonObject &params) const;
 
+    bool validateOperation(const QJsonObject &operation, QString &error) const;
     bool applyOperation(const QJsonObject &operation, QString &error);
+    bool applyTimelineOperation(const QJsonObject &operation, QString &error);
+    bool applyFilterOperation(const QJsonObject &operation, QString &error);
+    bool applySubtitleOperation(const QJsonObject &operation, QString &error);
     bool applyFilterParameters(int track,
                                int clip,
                                int filterIndex,
