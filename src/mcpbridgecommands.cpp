@@ -32,6 +32,20 @@ bool jsonInteger(const QJsonObject &object, const QString &name, int *result)
     return true;
 }
 
+bool jsonInteger64(const QJsonObject &object, const QString &name, qint64 *result)
+{
+    constexpr double maximumExactJsonInteger = 9007199254740991.0;
+    const auto value = object.value(name);
+    const double number = value.toDouble();
+    if (!value.isDouble() || !qIsFinite(number) || qAbs(number) > maximumExactJsonInteger)
+        return false;
+    const qint64 integer = static_cast<qint64>(number);
+    if (number != static_cast<double>(integer))
+        return false;
+    *result = integer;
+    return true;
+}
+
 QString requiredString(const QJsonObject &object, const QString &name)
 {
     const auto value = object.value(name);
@@ -54,12 +68,12 @@ bool McpBridge::checkRevision(const QJsonObject &params, QString &error) const
     const auto value = params.value(QStringLiteral("expected_revision"));
     if (value.isNull() || value.isUndefined())
         return true;
-    int expected = -1;
-    if (!jsonInteger(params, QStringLiteral("expected_revision"), &expected)) {
+    qint64 expected = -1;
+    if (!jsonInteger64(params, QStringLiteral("expected_revision"), &expected)) {
         error = QStringLiteral("expected_revision must be an integer");
         return false;
     }
-    const int actual = m_window.undoStack()->index();
+    const qint64 actual = m_revision;
     if (expected != actual) {
         error = QStringLiteral("Project revision conflict: expected %1, current %2. Read a new snapshot.")
                     .arg(expected)
@@ -185,7 +199,7 @@ McpBridge::RpcResult McpBridge::applyEditPlan(const QJsonObject &params)
         return RpcResult::success(QJsonObject{
             {QStringLiteral("valid"), true},
             {QStringLiteral("dry_run"), true},
-            {QStringLiteral("revision"), m_window.undoStack()->index()},
+            {QStringLiteral("revision"), static_cast<double>(m_revision)},
             {QStringLiteral("operation_count"), operations.size()},
         });
     }
@@ -209,12 +223,12 @@ McpBridge::RpcResult McpBridge::applyEditPlan(const QJsonObject &params)
         return RpcResult::failure(
             -32003,
             QStringLiteral("Edit plan rolled back after operation %1: %2").arg(applied).arg(applyError),
-            QJsonObject{{QStringLiteral("revision"), stack->index()}});
+            QJsonObject{{QStringLiteral("revision"), static_cast<double>(m_revision)}});
     }
 
     return RpcResult::success(QJsonObject{
         {QStringLiteral("applied"), applied},
-        {QStringLiteral("revision"), stack->index()},
+        {QStringLiteral("revision"), static_cast<double>(m_revision)},
         {QStringLiteral("undo_label"), label},
     });
 }
@@ -238,7 +252,7 @@ McpBridge::RpcResult McpBridge::changeHistory(const QJsonObject &params, bool re
     }
     return RpcResult::success(QJsonObject{
         {QStringLiteral("changed"), changed},
-        {QStringLiteral("revision"), stack->index()},
+        {QStringLiteral("revision"), static_cast<double>(m_revision)},
         {QStringLiteral("can_undo"), stack->canUndo()},
         {QStringLiteral("can_redo"), stack->canRedo()},
     });
