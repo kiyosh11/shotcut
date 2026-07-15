@@ -34,8 +34,10 @@ bool McpBridge::applyTimelineOperation(const QJsonObject &operation, QString &er
         int newIndex = oldCount;
         if (operation.value(QStringLiteral("index")).isDouble()) {
             newIndex = operation.value(QStringLiteral("index")).toInt();
-            stack->push(new Timeline::InsertTrackCommand(
-                *model, newIndex, video ? VideoTrackType : AudioTrackType));
+            stack->push(new Timeline::InsertTrackCommand(*model,
+                                                         newIndex,
+                                                         video ? VideoTrackType
+                                                               : AudioTrackType));
         } else {
             stack->push(new Timeline::AddTrackCommand(*model, video));
         }
@@ -107,15 +109,23 @@ bool McpBridge::applyTimelineOperation(const QJsonObject &operation, QString &er
                 error = QStringLiteral("trim-in exceeds available clip media or timeline space");
                 return false;
             }
-            stack->push(new Timeline::TrimClipInCommand(
-                *model, *timeline->markersModel(), track, clip, delta, ripple));
+            stack->push(new Timeline::TrimClipInCommand(*model,
+                                                        *timeline->markersModel(),
+                                                        track,
+                                                        clip,
+                                                        delta,
+                                                        ripple));
         } else {
             if (!model->trimClipOutValid(track, clip, delta, ripple)) {
                 error = QStringLiteral("trim-out exceeds available clip media or timeline space");
                 return false;
             }
-            stack->push(new Timeline::TrimClipOutCommand(
-                *model, *timeline->markersModel(), track, clip, delta, ripple));
+            stack->push(new Timeline::TrimClipOutCommand(*model,
+                                                         *timeline->markersModel(),
+                                                         track,
+                                                         clip,
+                                                         delta,
+                                                         ripple));
         }
         return true;
     }
@@ -127,8 +137,10 @@ bool McpBridge::applyTimelineOperation(const QJsonObject &operation, QString &er
             error = QStringLiteral("split position must be inside the clip");
             return false;
         }
-        stack->push(new Timeline::SplitCommand(
-            *model, std::vector<int>{track}, std::vector<int>{clip}, position));
+        stack->push(new Timeline::SplitCommand(*model,
+                                               std::vector<int>{track},
+                                               std::vector<int>{clip},
+                                               position));
         return true;
     }
 
