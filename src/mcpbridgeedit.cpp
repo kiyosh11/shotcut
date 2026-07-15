@@ -63,7 +63,7 @@ bool McpBridge::applyTimelineOperation(const QJsonObject &operation, QString &er
             || operation.value(QStringLiteral("out_frame")).isDouble()) {
             const int in = operation.value(QStringLiteral("in_frame")).toInt(producer.get_in());
             const int out = operation.value(QStringLiteral("out_frame")).toInt(producer.get_out());
-            if (in < 0 || out < in) {
+            if (in < 0 || out < in || out >= producer.get_length()) {
                 error = QStringLiteral("invalid source in/out range");
                 return false;
             }
