@@ -45,7 +45,9 @@ bool McpBridge::applyTimelineOperation(const QJsonObject &operation, QString &er
         return true;
     }
 
-    const int track = operation.value(QStringLiteral("track")).toInt(-1);
+    const int track = type == QStringLiteral("move_clip")
+                          ? operation.value(QStringLiteral("from_track")).toInt(-1)
+                          : operation.value(QStringLiteral("track")).toInt(-1);
     if (type == QStringLiteral("remove_track")) {
         stack->push(new Timeline::RemoveTrackCommand(*model, track));
         return true;
