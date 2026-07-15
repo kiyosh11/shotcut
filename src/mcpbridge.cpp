@@ -88,6 +88,19 @@ McpBridge::McpBridge(MainWindow &window, QObject *parent)
     , m_window(window)
 {
     connect(&m_server, &QLocalServer::newConnection, this, &McpBridge::onNewConnection);
+    connect(m_window.undoStack(), &QUndoStack::indexChanged, this, [this](int) {
+        advanceRevision();
+    });
+    connect(&m_window, &MainWindow::producerOpened, this, [this](bool) {
+        advanceRevision();
+    });
+}
+
+void McpBridge::advanceRevision()
+{
+    constexpr qint64 maximumExactJsonInteger = 9007199254740991LL;
+    if (m_revision < maximumExactJsonInteger)
+        ++m_revision;
 }
 
 McpBridge::~McpBridge()
@@ -300,7 +313,7 @@ QJsonObject McpBridge::editorStatus() const
         {QStringLiteral("connected"), true},
         {QStringLiteral("project_path"), m_window.fileName()},
         {QStringLiteral("modified"), m_window.isWindowModified()},
-        {QStringLiteral("revision"), stack ? stack->index() : 0},
+        {QStringLiteral("revision"), static_cast<double>(m_revision)},
         {QStringLiteral("can_undo"), stack && stack->canUndo()},
         {QStringLiteral("can_redo"), stack && stack->canRedo()},
         {QStringLiteral("allowed_roots"), roots},
@@ -426,7 +439,7 @@ QJsonObject McpBridge::projectSnapshot() const
     }
 
     return QJsonObject{
-        {QStringLiteral("revision"), m_window.undoStack()->index()},
+        {QStringLiteral("revision"), static_cast<double>(m_revision)},
         {QStringLiteral("project_path"), m_window.fileName()},
         {QStringLiteral("modified"), m_window.isWindowModified()},
         {QStringLiteral("position"), timeline->position()},
