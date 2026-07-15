@@ -89,11 +89,8 @@ bool McpBridge::applyFilterOperation(const QJsonObject &operation, QString &erro
                                  error);
 }
 
-bool McpBridge::applyFilterParameters(int track,
-                                      int clip,
-                                      int filterIndex,
-                                      const QJsonObject &parameters,
-                                      QString &error)
+bool McpBridge::applyFilterParameters(
+    int track, int clip, int filterIndex, const QJsonObject &parameters, QString &error)
 {
     Mlt::Producer producer = m_window.timelineDock()->producerForClip(track, clip);
     auto *controller = m_window.filterController();
