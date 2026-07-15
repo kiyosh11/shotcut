@@ -461,18 +461,61 @@ bool McpBridge::validateOperation(const QJsonObject &operation, QString &error) 
                    || !qIsFinite(operation.value(QStringLiteral("gain")).toDouble()))) {
         error = QStringLiteral("gain must be a finite number");
         return false;
-    } else if (type == QStringLiteral("add_filter")) {
-        if (requiredString(operation, QStringLiteral("filter_id")).isEmpty()
-            || !operation.value(QStringLiteral("parameters")).isObject()) {
-            error = QStringLiteral("filter_id and parameters are required");
+    } else if (type == QStringLiteral("add_filter")
+               || type == QStringLiteral("set_filter_parameters")) {
+        if (type == QStringLiteral("add_filter")
+            && requiredString(operation, QStringLiteral("filter_id")).isEmpty()) {
+            error = QStringLiteral("filter_id is required");
             return false;
         }
-    } else if (type == QStringLiteral("set_filter_parameters")) {
-        int filterIndex;
-        if (!jsonInteger(operation, QStringLiteral("filter_index"), &filterIndex)
-            || filterIndex < 0 || !operation.value(QStringLiteral("parameters")).isObject()) {
-            error = QStringLiteral("filter_index and parameters are invalid");
+        if (type == QStringLiteral("set_filter_parameters")) {
+            int filterIndex;
+            if (!jsonInteger(operation, QStringLiteral("filter_index"), &filterIndex)
+                || filterIndex < 0) {
+                error = QStringLiteral("filter_index is invalid");
+                return false;
+            }
+        }
+
+        const auto parametersValue = operation.value(QStringLiteral("parameters"));
+        if (!parametersValue.isObject()) {
+            error = QStringLiteral("parameters must be an object");
             return false;
+        }
+        const auto parameters = parametersValue.toObject();
+        for (auto it = parameters.constBegin(); it != parameters.constEnd(); ++it) {
+            const QString name = it.key();
+            const auto value = it.value();
+            if (name.isEmpty() || name.size() > 256 || name.startsWith(QLatin1Char('_'))
+                || name == QStringLiteral("mlt_service")
+                || name.startsWith(QStringLiteral("shotcut:"))) {
+                error = QStringLiteral("filter parameter '%1' is reserved or invalid").arg(name);
+                return false;
+            }
+            if (!value.isString() && !value.isBool() && !value.isDouble() && !value.isNull()) {
+                error = QStringLiteral(
+                            "filter parameter '%1' must be string, boolean, number, or null")
+                            .arg(name);
+                return false;
+            }
+            if (value.isDouble() && !qIsFinite(value.toDouble())) {
+                error = QStringLiteral("filter parameter '%1' must be finite").arg(name);
+                return false;
+            }
+            if (value.isString()) {
+                const QString stringValue = value.toString();
+                if (stringValue.size() > 1024 * 1024) {
+                    error = QStringLiteral("filter parameter '%1' is too large").arg(name);
+                    return false;
+                }
+                QFileInfo possiblePath(stringValue);
+                if (possiblePath.isAbsolute() && !pathAllowed(stringValue, true)) {
+                    error = QStringLiteral(
+                                "filter parameter '%1' references a path outside allowed roots")
+                                .arg(name);
+                    return false;
+                }
+            }
         }
     }
     return true;
