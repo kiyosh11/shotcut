@@ -146,8 +146,10 @@ bool McpBridge::applyTimelineOperation(const QJsonObject &operation, QString &er
 
     if (type == QStringLiteral("remove_clip")) {
         if (operation.value(QStringLiteral("ripple")).toBool()) {
-            stack->push(new Timeline::RemoveCommand(
-                *model, *timeline->markersModel(), track, clip));
+            stack->push(new Timeline::RemoveCommand(*model,
+                                                    *timeline->markersModel(),
+                                                    track,
+                                                    clip));
         } else {
             stack->push(new Timeline::LiftCommand(*model, track, clip));
         }
@@ -170,12 +172,15 @@ bool McpBridge::applyTimelineOperation(const QJsonObject &operation, QString &er
     }
 
     if (type == QStringLiteral("add_transition")) {
-        stack->push(new Timeline::AddTransitionCommand(
-            *timeline,
-            track,
-            clip,
-            operation.value(QStringLiteral("position")).toInt(),
-            operation.value(QStringLiteral("ripple")).toBool()));
+        stack->push(new Timeline::AddTransitionCommand(*timeline,
+                                                       track,
+                                                       clip,
+                                                       operation.value(
+                                                           QStringLiteral("position"))
+                                                           .toInt(),
+                                                       operation.value(
+                                                           QStringLiteral("ripple"))
+                                                           .toBool()));
         return true;
     }
 
