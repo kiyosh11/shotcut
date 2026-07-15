@@ -26,7 +26,7 @@ pub struct SaveProjectRequest {
     pub overwrite: bool,
     /// Reject the save when the editor changed since the last snapshot.
     #[serde(default)]
-    pub expected_revision: Option<i32>,
+    pub expected_revision: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -36,7 +36,7 @@ pub struct HistoryRequest {
     pub steps: u32,
     /// Reject the operation when the editor changed since the last snapshot.
     #[serde(default)]
-    pub expected_revision: Option<i32>,
+    pub expected_revision: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -51,7 +51,7 @@ pub struct ExportVideoRequest {
     pub overwrite: bool,
     /// Reject the export when the editor changed since the last snapshot.
     #[serde(default)]
-    pub expected_revision: Option<i32>,
+    pub expected_revision: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -66,7 +66,7 @@ pub struct ApplyEditPlanRequest {
     /// Human-readable undo-history label.
     pub label: String,
     /// Revision returned by project_snapshot or editor_status.
-    pub expected_revision: i32,
+    pub expected_revision: i64,
     /// Validate without changing the project.
     #[serde(default)]
     pub dry_run: bool,
