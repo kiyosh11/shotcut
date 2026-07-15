@@ -69,6 +69,8 @@ A capable AI should:
 6. Save explicitly.
 7. Export only after explicit approval, then poll export_status.
 
+Dry-run validation resolves track and clip indexes against the current snapshot. Apply structural stages that create, move, split, or remove indexed objects, then read a new snapshot before planning the next stage.
+
 Filter operations use Shotcut filter IDs from the installed build. Media analysis, transcription, or generative assets can be performed by other approved MCP tools, then inserted through this server as files under an allowed root.
 
 ## Development status
