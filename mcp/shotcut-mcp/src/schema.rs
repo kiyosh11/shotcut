@@ -164,6 +164,7 @@ pub enum EditOperation {
     SetClipGain {
         track: i32,
         clip: i32,
+        /// Gain in decibels, from -120 to 60.
         gain: f64,
     },
     SetClipFade {
