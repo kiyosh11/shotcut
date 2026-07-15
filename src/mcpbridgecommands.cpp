@@ -14,8 +14,6 @@
 #include "jobqueue.h"
 #include "mainwindow.h"
 
-#include <QCoreApplication>
-#include <QEventLoop>
 #include <QFileInfo>
 #include <QJsonArray>
 #include <QUndoStack>
@@ -50,6 +48,15 @@ QString requiredString(const QJsonObject &object, const QString &name)
 {
     const auto value = object.value(name);
     return value.isString() ? value.toString() : QString();
+}
+
+Qt::CaseSensitivity pathCaseSensitivity()
+{
+#ifdef Q_OS_WIN
+    return Qt::CaseInsensitive;
+#else
+    return Qt::CaseSensitive;
+#endif
 }
 } // namespace
 
@@ -108,10 +115,8 @@ McpBridge::RpcResult McpBridge::openProject(const QJsonObject &params)
     if (discard)
         m_window.setWindowModified(false);
     m_window.open(normalized, nullptr, false);
-    QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
-
     const QString opened = normalizedPathForPolicy(m_window.fileName(), true);
-    if (opened.compare(normalized, Qt::CaseInsensitive) != 0) {
+    if (opened.compare(normalized, pathCaseSensitivity()) != 0) {
         if (wasModified)
             m_window.setWindowModified(true);
         return RpcResult::failure(-32003, QStringLiteral("Shotcut did not open the requested project"));
@@ -141,13 +146,8 @@ McpBridge::RpcResult McpBridge::saveProject(const QJsonObject &params)
                                   QStringLiteral("Save path is outside SHOTCUT_MCP_ALLOWED_ROOTS"));
 
     const QString currentPath = normalizedPathForPolicy(m_window.fileName(), true);
-    const auto pathComparison =
-#ifdef Q_OS_WIN
-        Qt::CaseInsensitive;
-#else
-        Qt::CaseSensitive;
-#endif
-    if (QFileInfo::exists(normalized) && normalized.compare(currentPath, pathComparison) != 0
+    if (QFileInfo::exists(normalized)
+        && normalized.compare(currentPath, pathCaseSensitivity()) != 0
         && !params.value(QStringLiteral("overwrite")).toBool(false)) {
         return RpcResult::failure(
             -32002,
