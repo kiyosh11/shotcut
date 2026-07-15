@@ -10,13 +10,16 @@
 #include "mcpbridge.h"
 
 #include "Logger.h"
+#include "controllers/filtercontroller.h"
 #include "docks/encodedock.h"
 #include "docks/timelinedock.h"
 #include "jobqueue.h"
 #include "mainwindow.h"
 #include "mltcontroller.h"
+#include "models/metadatamodel.h"
 #include "models/multitrackmodel.h"
 #include "models/subtitlesmodel.h"
+#include "qmltypes/qmlmetadata.h"
 #include "shotcut_mlt_properties.h"
 
 #include <MltFilter.h>
@@ -260,6 +263,38 @@ QJsonObject McpBridge::editorStatus() const
             presets.append(preset);
     }
 
+    QJsonArray filterCatalog;
+    auto *metadataModel = m_window.filterController()->metadataModel();
+    for (int index = 0; index < metadataModel->sourceRowCount(); ++index) {
+        const auto *metadata = metadataModel->getFromSource(index);
+        if (!metadata || metadata->isHidden() || metadata->isDeprecated()
+            || metadata->isTrackOnly() || metadata->isOutputOnly()
+            || (metadata->type() != QmlMetadata::Filter
+                && metadata->type() != QmlMetadata::Link
+                && metadata->type() != QmlMetadata::FilterSet)) {
+            continue;
+        }
+        const QString id = metadata->uniqueId();
+        if (id.isEmpty())
+            continue;
+        QString type = QStringLiteral("filter");
+        if (metadata->type() == QmlMetadata::Link)
+            type = QStringLiteral("link");
+        else if (metadata->type() == QmlMetadata::FilterSet)
+            type = QStringLiteral("filter_set");
+        filterCatalog.append(QJsonObject{
+            {QStringLiteral("id"), id},
+            {QStringLiteral("name"), metadata->name()},
+            {QStringLiteral("type"), type},
+            {QStringLiteral("audio"), metadata->isAudio()},
+            {QStringLiteral("clip_only"), metadata->isClipOnly()},
+            {QStringLiteral("allow_multiple"), metadata->allowMultiple()},
+            {QStringLiteral("needs_gpu"), metadata->needsGPU()},
+            {QStringLiteral("gpu_compatible"), metadata->isGpuCompatible()},
+            {QStringLiteral("keywords"), metadata->keywords()},
+        });
+    }
+
     return QJsonObject{
         {QStringLiteral("bridge_protocol"), 1},
         {QStringLiteral("connected"), true},
@@ -270,6 +305,7 @@ QJsonObject McpBridge::editorStatus() const
         {QStringLiteral("can_redo"), stack && stack->canRedo()},
         {QStringLiteral("allowed_roots"), roots},
         {QStringLiteral("export_presets"), presets},
+        {QStringLiteral("filter_catalog"), filterCatalog},
         {QStringLiteral("jobs"), exportJobs()},
     };
 }
