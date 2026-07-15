@@ -20,6 +20,7 @@
 #include "Logger.h"
 #include "gpuinfo.h"
 #include "mainwindow.h"
+#include "mcpbridge.h"
 #include "settings.h"
 
 #include <framework/mlt_log.h>
@@ -570,6 +571,9 @@ int main(int argc, char **argv)
         } else {
             a.mainWindow->open(a.mainWindow->untitledFileName());
         }
+
+        McpBridge mcpBridge(*a.mainWindow);
+        mcpBridge.startFromEnvironment();
 
         result = a.exec();
 
