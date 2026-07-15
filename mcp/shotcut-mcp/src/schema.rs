@@ -18,7 +18,7 @@ pub struct OpenProjectRequest {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SaveProjectRequest {
     /// Optional absolute destination. Omit to save the current project in place.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
     /// Store media paths relative to the project when possible.
     #[serde(default = "default_true")]
@@ -44,7 +44,7 @@ pub struct ExportVideoRequest {
     /// Absolute output file path.
     pub target: String,
     /// Shotcut/MLT stock preset name. Omit to use the current Export panel settings.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preset: Option<String>,
     /// Permit replacing an existing target file.
     #[serde(default)]
@@ -56,7 +56,7 @@ pub struct ExportVideoRequest {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ExportStatusRequest {
     /// Optional absolute target path used to filter the job list.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target: Option<String>,
 }
 
@@ -109,9 +109,9 @@ pub enum EditOperation {
     AddTrack {
         kind: TrackKind,
         /// Insert at this index; omit to append.
-        #[serde(default)]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         index: Option<i32>,
-        #[serde(default)]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         name: Option<String>,
     },
     RemoveTrack {
@@ -124,10 +124,10 @@ pub enum EditOperation {
         /// Timeline position in frames.
         position: i32,
         /// Optional source in point in frames.
-        #[serde(default)]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         in_frame: Option<i32>,
         /// Optional inclusive source out point in frames.
-        #[serde(default)]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         out_frame: Option<i32>,
     },
     MoveClip {
@@ -183,15 +183,15 @@ pub enum EditOperation {
     },
     SetTrackState {
         track: i32,
-        #[serde(default)]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         name: Option<String>,
-        #[serde(default)]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         muted: Option<bool>,
-        #[serde(default)]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         hidden: Option<bool>,
-        #[serde(default)]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         composite: Option<bool>,
-        #[serde(default)]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         locked: Option<bool>,
     },
     AddFilter {
@@ -210,7 +210,7 @@ pub enum EditOperation {
     },
     AddSubtitleTrack {
         name: String,
-        #[serde(default)]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         language: Option<String>,
     },
     ReplaceSubtitles {
@@ -226,13 +226,13 @@ pub struct FullVideoPromptArgs {
     /// Newline-separated absolute source-media paths.
     pub sources: String,
     /// Optional target duration, such as "60 seconds".
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target_duration: Option<String>,
     /// Optional creative direction.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub style: Option<String>,
     /// Optional absolute export path.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_path: Option<String>,
 }
 
