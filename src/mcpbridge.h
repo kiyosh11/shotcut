@@ -67,11 +67,8 @@ private:
     bool applyTimelineOperation(const QJsonObject &operation, QString &error);
     bool applyFilterOperation(const QJsonObject &operation, QString &error);
     bool applySubtitleOperation(const QJsonObject &operation, QString &error);
-    bool applyFilterParameters(int track,
-                               int clip,
-                               int filterIndex,
-                               const QJsonObject &parameters,
-                               QString &error);
+    bool applyFilterParameters(
+        int track, int clip, int filterIndex, const QJsonObject &parameters, QString &error);
     bool checkRevision(const QJsonObject &params, QString &error) const;
     bool trackExists(int track) const;
     bool clipExists(int track, int clip) const;
