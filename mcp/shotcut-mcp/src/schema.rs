@@ -21,6 +21,9 @@ pub struct SaveProjectRequest {
     /// Store media paths relative to the project when possible.
     #[serde(default = "default_true")]
     pub relative_paths: bool,
+    /// Permit replacing an existing explicit destination other than the current project.
+    #[serde(default)]
+    pub overwrite: bool,
     /// Reject the save when the editor changed since the last snapshot.
     #[serde(default)]
     pub expected_revision: Option<i32>,
