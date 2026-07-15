@@ -294,8 +294,8 @@ QJsonObject McpBridge::editorStatus() const
     auto *metadataModel = m_window.filterController()->metadataModel();
     for (int index = 0; index < metadataModel->sourceRowCount(); ++index) {
         const auto *metadata = metadataModel->getFromSource(index);
-        if (!metadata || metadata->isHidden() || metadata->isDeprecated()
-            || metadata->isTrackOnly() || metadata->isOutputOnly()) {
+        if (!metadata || metadata->isHidden() || metadata->isDeprecated() || metadata->isTrackOnly()
+            || metadata->isOutputOnly()) {
             continue;
         }
         const auto type = metadata->type();
