@@ -73,8 +73,10 @@ bool McpBridge::clipExists(int track, int clip) const
 bool McpBridge::checkRevision(const QJsonObject &params, QString &error) const
 {
     const auto value = params.value(QStringLiteral("expected_revision"));
-    if (value.isNull() || value.isUndefined())
-        return true;
+    if (value.isNull() || value.isUndefined()) {
+        error = QStringLiteral("expected_revision is required; read editor status or a snapshot");
+        return false;
+    }
     qint64 expected = -1;
     if (!jsonInteger64(params, QStringLiteral("expected_revision"), &expected)) {
         error = QStringLiteral("expected_revision must be an integer");
@@ -92,6 +94,10 @@ bool McpBridge::checkRevision(const QJsonObject &params, QString &error) const
 
 McpBridge::RpcResult McpBridge::openProject(const QJsonObject &params)
 {
+    QString revisionError;
+    if (!checkRevision(params, revisionError))
+        return RpcResult::failure(-32002, revisionError);
+
     QString path = requiredString(params, QStringLiteral("path"));
     if (path.isEmpty())
         return RpcResult::failure(-32602, QStringLiteral("path is required"));
