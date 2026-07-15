@@ -44,7 +44,7 @@ Optional variables:
 | Variable | Read by | Meaning |
 | --- | --- | --- |
 | SHOTCUT_MCP_ENDPOINT | both | Local socket or named-pipe name. It must match on both sides. |
-| SHOTCUT_MCP_TIMEOUT_SECONDS | Rust server | Per-request timeout; defaults to 30 seconds. |
+| SHOTCUT_MCP_TIMEOUT_SECONDS | Rust server | Per-request timeout; defaults to 300 seconds. |
 | SHOTCUT_MCP_ALLOWED_ROOTS | Shotcut | Existing root directories allowed for media and project I/O. Uses ; on Windows and : on Unix. |
 
 If allowed roots are omitted, Shotcut permits the current user's home directory. An output file does not need to exist, but its parent directory must already exist inside an allowed root.
