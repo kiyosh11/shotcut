@@ -101,9 +101,9 @@ McpBridge::RpcResult McpBridge::openProject(const QJsonObject &params)
     QString path = requiredString(params, QStringLiteral("path"));
     if (path.isEmpty())
         return RpcResult::failure(-32602, QStringLiteral("path is required"));
-    if (!path.endsWith(QStringLiteral(".mlt"), Qt::CaseInsensitive)
-        && !path.endsWith(QStringLiteral(".xml"), Qt::CaseInsensitive))
-        return RpcResult::failure(-32602, QStringLiteral("Only .mlt and .xml projects can be opened"));
+    if (!path.endsWith(QStringLiteral(".mlt"))
+        && !path.endsWith(QStringLiteral(".xml")))
+        return RpcResult::failure(-32602, QStringLiteral("Project extension must be lowercase .mlt or .xml"));
 
     QString normalized;
     if (!pathAllowed(path, true, &normalized))
@@ -142,9 +142,9 @@ McpBridge::RpcResult McpBridge::saveProject(const QJsonObject &params)
         if (path.isEmpty() || path == m_window.untitledFileName())
             return RpcResult::failure(-32602, QStringLiteral("An absolute save path is required"));
     }
-    if (!path.endsWith(QStringLiteral(".mlt"), Qt::CaseInsensitive)
-        && !path.endsWith(QStringLiteral(".xml"), Qt::CaseInsensitive))
-        return RpcResult::failure(-32602, QStringLiteral("Save path must end in .mlt or .xml"));
+    if (!path.endsWith(QStringLiteral(".mlt"))
+        && !path.endsWith(QStringLiteral(".xml")))
+        return RpcResult::failure(-32602, QStringLiteral("Save path must end in lowercase .mlt or .xml"));
 
     QString normalized;
     if (!pathAllowed(path, false, &normalized))
