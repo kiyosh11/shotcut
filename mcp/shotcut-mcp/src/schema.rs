@@ -261,6 +261,19 @@ mod tests {
     }
 
     #[test]
+    fn absent_optional_fields_are_omitted_from_bridge_json() {
+        let operation = EditOperation::AddTrack {
+            kind: TrackKind::Video,
+            index: None,
+            name: None,
+        };
+        let value = serde_json::to_value(operation).unwrap();
+        assert_eq!(value["op"], "add_track");
+        assert!(value.get("index").is_none());
+        assert!(value.get("name").is_none());
+    }
+
+    #[test]
     fn unknown_operations_are_rejected() {
         let value = serde_json::json!({"op": "run_shell", "command": "nope"});
         assert!(serde_json::from_value::<EditOperation>(value).is_err());
