@@ -73,6 +73,8 @@ public:
     QUndoStack *undoStack() const;
     bool saveXML(const QString &filename, bool withRelativePaths = true);
     bool saveProjectAs(const QString &filename, bool withRelativePaths = true);
+    bool saveProjectAsNonInteractive(const QString &filename, bool withRelativePaths = true);
+    bool canOpenProjectNonInteractive(const QString &filename, QString *errorMessage = nullptr);
     static void changeTheme(const QString &theme);
     PlaylistDock *playlistDock() const { return m_playlistDock; }
     TimelineDock *timelineDock() const { return m_timelineDock; }
@@ -168,6 +170,7 @@ private:
     void changeDeinterlacer(bool checked, const char *method);
     void changeInterpolation(bool checked, const char *method);
     bool checkAutoSave(QString &url);
+    bool saveProjectAsInternal(const QString &filename, bool withRelativePaths, bool interactive);
     bool saveConvertedXmlFile(MltXmlChecker &checker, QString &fileName);
     bool saveRepairedXmlFile(MltXmlChecker &checker, QString &fileName);
     void setAudioChannels(int channels);

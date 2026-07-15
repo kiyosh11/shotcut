@@ -17,3 +17,10 @@ add_executable(test_mcpundoutils
 target_include_directories(test_mcpundoutils PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(test_mcpundoutils PRIVATE Qt6::Gui Qt6::Test)
 add_test(NAME mcpundoutils COMMAND test_mcpundoutils)
+
+add_executable(test_mcpbridgepolicy
+  test_mcpbridgepolicy.cpp
+)
+target_include_directories(test_mcpbridgepolicy PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(test_mcpbridgepolicy PRIVATE Qt6::Core Qt6::Test)
+add_test(NAME mcpbridgepolicy COMMAND test_mcpbridgepolicy)

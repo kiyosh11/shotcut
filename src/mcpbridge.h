@@ -57,6 +57,7 @@ private:
     QJsonObject editorStatus() const;
     QJsonObject projectSnapshot() const;
     QJsonArray exportJobs(const QString &target = QString()) const;
+    bool exportTargetInProgress(const QString &target) const;
 
     RpcResult openProject(const QJsonObject &params);
     RpcResult saveProject(const QJsonObject &params);
@@ -75,6 +76,11 @@ private:
     bool checkRevision(const QJsonObject &params, QString &error) const;
     bool trackExists(int track) const;
     bool clipExists(int track, int clip) const;
+    bool normalizeFilterPathParameter(const QString &filterId,
+                                      const QString &name,
+                                      const QJsonValue &value,
+                                      QString *normalized,
+                                      QString &error) const;
     bool pathAllowed(const QString &path, bool mustExist, QString *normalized = nullptr) const;
     QString normalizedPathForPolicy(const QString &path, bool mustExist) const;
     void loadAllowedRoots();

@@ -106,12 +106,19 @@ bool McpBridge::applyFilterParameters(
         return false;
     }
 
+    const QString filterId = filter->objectNameOrService();
     filter->startUndoTracking();
     filter->startUndoParameterCommand(QStringLiteral("AI filter parameters"));
     for (auto it = parameters.constBegin(); it != parameters.constEnd(); ++it) {
         const auto value = it.value();
+        QString parameterValue;
+        if (!normalizeFilterPathParameter(filterId, it.key(), value, &parameterValue, error)) {
+            filter->endUndoCommand();
+            filter->stopUndoTracking();
+            return false;
+        }
         if (value.isString()) {
-            filter->set(it.key(), value.toString());
+            filter->set(it.key(), parameterValue);
         } else if (value.isBool()) {
             filter->set(it.key(), value.toBool());
         } else if (value.isDouble()) {

@@ -9,6 +9,8 @@
 
 #include "mcpbridge.h"
 
+#include "mcpbridgepolicy.h"
+
 #include "Logger.h"
 #include "controllers/filtercontroller.h"
 #include "docks/encodedock.h"
@@ -38,6 +40,24 @@
 
 namespace {
 constexpr qsizetype kMaximumMessageBytes = 16 * 1024 * 1024;
+
+Qt::CaseSensitivity filePathCaseSensitivity()
+{
+#ifdef Q_OS_WIN
+    return Qt::CaseInsensitive;
+#else
+    return Qt::CaseSensitive;
+#endif
+}
+
+bool localPathsEqual(const QString &left, const QString &right)
+{
+    const QString normalizedLeft = QDir::cleanPath(
+        QDir::fromNativeSeparators(QFileInfo(left).absoluteFilePath()));
+    const QString normalizedRight = QDir::cleanPath(
+        QDir::fromNativeSeparators(QFileInfo(right).absoluteFilePath()));
+    return normalizedLeft.compare(normalizedRight, filePathCaseSensitivity()) == 0;
+}
 
 QString trackTypeName(TrackType type)
 {
@@ -527,7 +547,7 @@ QJsonArray McpBridge::exportJobs(const QString &target) const
             continue;
         if (!requestedTarget.isEmpty()) {
             const QString jobTarget = QFileInfo(job->target()).absoluteFilePath();
-            if (jobTarget != requestedTarget)
+            if (!localPathsEqual(jobTarget, requestedTarget))
                 continue;
         }
         result.append(QJsonObject{
@@ -537,6 +557,66 @@ QJsonArray McpBridge::exportJobs(const QString &target) const
         });
     }
     return result;
+}
+
+bool McpBridge::exportTargetInProgress(const QString &target) const
+{
+    for (auto *job : JOBS.jobs()) {
+        if (job && !job->isFinished() && localPathsEqual(job->target(), target))
+            return true;
+    }
+    return false;
+}
+
+bool McpBridge::normalizeFilterPathParameter(const QString &filterId,
+                                             const QString &name,
+                                             const QJsonValue &value,
+                                             QString *normalized,
+                                             QString &error) const
+{
+    const auto kind = McpBridgePolicy::filterPathKind(filterId, name);
+    if (kind == McpBridgePolicy::FilterPathKind::NotPath) {
+        if (normalized && value.isString())
+            *normalized = value.toString();
+        return true;
+    }
+    if (value.isNull())
+        return true;
+    if (!value.isString() || value.toString().isEmpty()) {
+        error = QStringLiteral("filter parameter '%1' for '%2' must be an absolute filesystem "
+                               "path or null")
+                    .arg(name, filterId);
+        return false;
+    }
+    if (McpBridgePolicy::isBuiltInValue(filterId, name, value.toString())) {
+        if (normalized)
+            *normalized = value.toString();
+        return true;
+    }
+
+    const bool mustExist = kind == McpBridgePolicy::FilterPathKind::ExistingFile;
+    QString safePath;
+    if (!pathAllowed(value.toString(), mustExist, &safePath)) {
+        error = mustExist
+                    ? QStringLiteral("filter parameter '%1' for '%2' must reference an existing "
+                                     "absolute file inside allowed roots")
+                          .arg(name, filterId)
+                    : QStringLiteral("filter parameter '%1' for '%2' must be an absolute path "
+                                     "with an existing parent inside allowed roots")
+                          .arg(name, filterId);
+        return false;
+    }
+
+    const QFileInfo info(safePath);
+    if ((mustExist && !info.isFile()) || (info.exists() && !info.isFile())) {
+        error = QStringLiteral("filter parameter '%1' for '%2' must reference a file, not a "
+                               "directory")
+                    .arg(name, filterId);
+        return false;
+    }
+    if (normalized)
+        *normalized = safePath;
+    return true;
 }
 
 void McpBridge::loadAllowedRoots()
@@ -559,6 +639,8 @@ QString McpBridge::normalizedPathForPolicy(const QString &path, bool mustExist) 
 {
     QFileInfo info(path);
     if (!info.isAbsolute() || (mustExist && !info.exists()))
+        return QString();
+    if (info.isSymLink() && !info.exists())
         return QString();
     if (info.exists())
         return QDir::fromNativeSeparators(info.canonicalFilePath());

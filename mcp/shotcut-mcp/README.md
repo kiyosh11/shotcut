@@ -23,13 +23,15 @@ The bridge is disabled unless SHOTCUT_MCP_ENABLE=1. When enabled it:
 
 - accepts only same-user local socket or named-pipe connections;
 - requires a session token of at least 32 characters on every request;
-- restricts project, media, save, and export paths to configured filesystem roots;
+- restricts project, media, save, export, and file-valued filter parameters to configured filesystem roots;
 - exposes typed editor operations and never exposes a shell or arbitrary command execution;
 - uses optimistic revision checks so an AI cannot silently overwrite newer manual edits;
 - supports dry-run validation, refuses to overwrite native redo history, and removes a failed plan from history after reverting it;
 - marks modifying MCP tools as destructive so compatible clients can require approval.
 
 This is powerful editor access. Use a fresh token for each session, keep write approvals enabled, and restrict allowed roots to the media directories needed for the job.
+
+MCP project opening and export are deliberately noninteractive. Projects that require repair, missing-file relinking, processing-mode conversion, or auto-save recovery must be handled in Shotcut first. Export likewise returns an error when media is missing or a filter analysis is pending; complete the analysis in Shotcut and retry.
 
 ## Environment
 
@@ -89,7 +91,7 @@ A capable AI should:
 6. Save explicitly.
 7. Export only after explicit approval, then poll export_status.
 
-Dry-run validation resolves track and clip indexes against the current snapshot. Apply structural stages that create, move, split, or remove indexed objects, then read a new snapshot before planning the next stage. Before applying a plan, resolve any existing redo history in Shotcut; the bridge refuses to destroy it.
+All edit indices are validated against the current snapshot. Structural changes that create, move, split, or remove indexed objects must be staged: apply them, then read a new snapshot before planning the next stage. Before applying a plan, resolve any existing redo history in Shotcut; the bridge refuses to destroy it.
 
 Video tracks occupy the logical indexes before audio tracks. An explicit track insertion index must stay within that kind's region. When `index` is omitted, Shotcut adds a video track at the top or an audio track at the end.
 

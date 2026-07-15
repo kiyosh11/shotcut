@@ -15,8 +15,11 @@
 #include "docks/timelinedock.h"
 #include "jobqueue.h"
 #include "mainwindow.h"
+#include "models/attachedfiltersmodel.h"
 #include "models/multitrackmodel.h"
+#include "qmltypes/qmlmetadata.h"
 
+#include <MltProducer.h>
 #include <QFileInfo>
 #include <QJsonArray>
 #include <QUndoStack>
@@ -115,6 +118,10 @@ McpBridge::RpcResult McpBridge::openProject(const QJsonObject &params)
     if (!pathAllowed(path, true, &normalized))
         return RpcResult::failure(-32004, QStringLiteral("Project path is outside allowed roots"));
 
+    QString openError;
+    if (!m_window.canOpenProjectNonInteractive(normalized, &openError))
+        return RpcResult::failure(-32003, openError);
+
     const bool discard = params.value(QStringLiteral("discard_unsaved")).toBool(false);
     const bool wasModified = m_window.isWindowModified();
     if (wasModified && !discard)
@@ -122,9 +129,9 @@ McpBridge::RpcResult McpBridge::openProject(const QJsonObject &params)
 
     if (discard)
         m_window.setWindowModified(false);
-    m_window.open(normalized, nullptr, false);
+    const bool openCallSucceeded = m_window.open(normalized, nullptr, false, true);
     const QString opened = normalizedPathForPolicy(m_window.fileName(), true);
-    if (opened.compare(normalized, pathCaseSensitivity()) != 0) {
+    if (!openCallSucceeded || opened.compare(normalized, pathCaseSensitivity()) != 0) {
         if (wasModified)
             m_window.setWindowModified(true);
         return RpcResult::failure(-32003, QStringLiteral("Shotcut did not open that project"));
@@ -151,6 +158,10 @@ McpBridge::RpcResult McpBridge::saveProject(const QJsonObject &params)
     if (!pathAllowed(path, false, &normalized))
         return RpcResult::failure(-32004, QStringLiteral("Save path is outside allowed roots"));
 
+    const QFileInfo saveTarget(normalized);
+    if (!QFileInfo(saveTarget.absolutePath()).isWritable())
+        return RpcResult::failure(-32003, QStringLiteral("Save directory is not writable"));
+
     const QString currentPath = normalizedPathForPolicy(m_window.fileName(), true);
     const bool differentPath = normalized.compare(currentPath, pathCaseSensitivity()) != 0;
     const bool overwrite = params.value(QStringLiteral("overwrite")).toBool(false);
@@ -158,7 +169,7 @@ McpBridge::RpcResult McpBridge::saveProject(const QJsonObject &params)
         return RpcResult::failure(-32002, QStringLiteral("Save target exists; overwrite is false"));
 
     const bool relativePaths = params.value(QStringLiteral("relative_paths")).toBool(true);
-    if (!m_window.saveProjectAs(normalized, relativePaths))
+    if (!m_window.saveProjectAsNonInteractive(normalized, relativePaths))
         return RpcResult::failure(-32003, QStringLiteral("Shotcut failed to save the project"));
     return RpcResult::success(editorStatus());
 }
@@ -305,7 +316,7 @@ McpBridge::RpcResult McpBridge::startExport(const QJsonObject &params)
         return RpcResult::failure(-32004, QStringLiteral("Export target is outside allowed roots"));
     if (QFileInfo::exists(normalized) && !params.value(QStringLiteral("overwrite")).toBool(false))
         return RpcResult::failure(-32002, QStringLiteral("Export target exists; set overwrite"));
-    if (JOBS.targetIsInProgress(normalized))
+    if (exportTargetInProgress(normalized))
         return RpcResult::failure(-32002, QStringLiteral("An export to this target is active"));
 
     QString error;
@@ -584,8 +595,9 @@ bool McpBridge::validateOperation(const QJsonObject &operation, QString &error) 
         }
     } else if (type == QStringLiteral("add_filter")
                || type == QStringLiteral("set_filter_parameters")) {
+        QString filterId;
         if (type == QStringLiteral("add_filter")) {
-            const QString filterId = requiredString(operation, QStringLiteral("filter_id"));
+            filterId = requiredString(operation, QStringLiteral("filter_id"));
             if (filterId.isEmpty() || filterId.size() > 512) {
                 error = QStringLiteral("filter_id must be 1 to 512 characters");
                 return false;
@@ -598,6 +610,19 @@ bool McpBridge::validateOperation(const QJsonObject &operation, QString &error) 
                 error = QStringLiteral("filter_index is invalid");
                 return false;
             }
+            Mlt::Producer producer = m_window.timelineDock()->producerForClip(track, clip);
+            AttachedFiltersModel attachedFilters;
+            attachedFilters.setProducer(&producer);
+            if (filterIndex >= attachedFilters.rowCount()) {
+                error = QStringLiteral("filter_index does not exist");
+                return false;
+            }
+            const auto *metadata = attachedFilters.getMetadata(filterIndex);
+            if (!metadata || metadata->uniqueId().isEmpty()) {
+                error = QStringLiteral("filter_index does not identify an editable filter");
+                return false;
+            }
+            filterId = metadata->uniqueId();
         }
 
         const auto parametersValue = operation.value(QStringLiteral("parameters"));
@@ -626,20 +651,12 @@ bool McpBridge::validateOperation(const QJsonObject &operation, QString &error) 
                 error = QStringLiteral("filter parameter '%1' exceeds numeric limit").arg(name);
                 return false;
             }
-            if (value.isString()) {
-                const QString stringValue = value.toString();
-                if (stringValue.size() > 1024 * 1024) {
-                    error = QStringLiteral("filter parameter '%1' is too large").arg(name);
-                    return false;
-                }
-                QFileInfo possiblePath(stringValue);
-                if (possiblePath.isAbsolute() && !pathAllowed(stringValue, true)) {
-                    error = QStringLiteral(
-                                "filter parameter '%1' references a path outside allowed roots")
-                                .arg(name);
-                    return false;
-                }
+            if (value.isString() && value.toString().size() > 1024 * 1024) {
+                error = QStringLiteral("filter parameter '%1' is too large").arg(name);
+                return false;
             }
+            if (!normalizeFilterPathParameter(filterId, name, value, nullptr, error))
+                return false;
         }
     }
     return true;

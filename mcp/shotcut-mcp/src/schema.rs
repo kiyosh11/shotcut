@@ -68,7 +68,9 @@ pub struct ApplyEditPlanRequest {
     /// Validate without changing the project.
     #[serde(default)]
     pub dry_run: bool,
-    /// Ordered editing operations. Later operations observe earlier operations.
+    /// Ordered editing operations. All edit indices are validated against the current snapshot.
+    /// Structural changes must be staged and applied, then the snapshot re-read before
+    /// addressing newly created, moved, split, or removed objects by index.
     pub operations: Vec<EditOperation>,
 }
 

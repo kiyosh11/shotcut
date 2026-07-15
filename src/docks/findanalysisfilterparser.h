@@ -30,16 +30,19 @@ class FindAnalysisFilterParser : public Mlt::Parser
 private:
     QList<Mlt::Filter> m_filters;
     bool m_skipAnalyzed;
+    bool m_prepareJobs;
 
 public:
     FindAnalysisFilterParser()
         : Mlt::Parser()
         , m_skipAnalyzed(true)
+        , m_prepareJobs(true)
     {}
 
     QList<Mlt::Filter> &filters() { return m_filters; }
 
     void skipAnalyzed(bool skip) { m_skipAnalyzed = skip; }
+    void prepareJobs(bool prepare) { m_prepareJobs = prepare; }
 
     int on_start_filter(Mlt::Filter *filter)
     {
@@ -49,20 +52,25 @@ public:
             QString results = filter->get("results");
             if (results.isEmpty() || !m_skipAnalyzed) {
                 if (serviceName == "vidstab") {
-                    // vidstab requires a filename, which is only available when using a project folder.
-                    QString filename = filter->get("filename");
-                    if (filename.isEmpty() || filename.endsWith("vidstab.trf")) {
-                        filename = QmlApplication::getNextProjectFile("stab-");
-                    }
-                    if (!filename.isEmpty()) {
-                        filter->set("filename", filename.toUtf8().constData());
+                    if (!m_prepareJobs) {
+                        // Discovery must not create or truncate an analysis file.
                         m_filters << Mlt::Filter(*filter);
+                    } else {
+                        // vidstab requires a filename, which is only available when using a project folder.
+                        QString filename = filter->get("filename");
+                        if (filename.isEmpty() || filename.endsWith("vidstab.trf")) {
+                            filename = QmlApplication::getNextProjectFile("stab-");
+                        }
+                        if (!filename.isEmpty()) {
+                            filter->set("filename", filename.toUtf8().constData());
+                            m_filters << Mlt::Filter(*filter);
 
-                        // Touch file to prevent overwriting the same file
-                        QFile file(filename);
-                        if (file.open(QIODevice::WriteOnly)) {
-                            file.resize(0);
-                            file.close();
+                            // Touch file to prevent overwriting the same file
+                            QFile file(filename);
+                            if (file.open(QIODevice::WriteOnly)) {
+                                file.resize(0);
+                                file.close();
+                            }
                         }
                     }
                 } else {

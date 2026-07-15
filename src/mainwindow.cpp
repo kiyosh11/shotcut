@@ -2328,6 +2328,46 @@ void MainWindow::onAutosaveTimeout()
     }
 }
 
+bool MainWindow::canOpenProjectNonInteractive(const QString &filename, QString *errorMessage)
+{
+    auto fail = [errorMessage](const QString &message) {
+        if (errorMessage)
+            *errorMessage = message;
+        return false;
+    };
+
+    MltXmlChecker checker;
+    const auto checkResult = checker.check(filename);
+    if (checkResult == QXmlStreamReader::CustomError) {
+        return fail(
+            tr("This project requires a newer Shotcut version (%1).").arg(checker.shotcutVersion()));
+    }
+    if (checkResult != QXmlStreamReader::NoError)
+        return fail(tr("Project XML could not be read: %1").arg(checker.errorString()));
+    if ((checker.needsGPU() && !Settings.playerGPU())
+        || (checker.needsCPU() && Settings.playerGPU())) {
+        return fail(tr("This project requires processing-mode conversion. Open it manually "
+                       "and save the converted project before using MCP."));
+    }
+    if (checker.isCorrected()) {
+        return fail(tr("This project requires repair. Open it manually and save the repaired "
+                       "project before using MCP."));
+    }
+    if (checker.unlinkedFilesModel().rowCount() > 0) {
+        return fail(tr("This project has missing files. Repair it manually before using MCP."));
+    }
+
+    QMutexLocker locker(&m_autosaveMutex);
+    QScopedPointer<AutoSaveFile> stale(AutoSaveFile::getFile(filename));
+    if (stale) {
+        // AutoSaveFile removes its file on destruction; this is a read-only existence check.
+        stale->setFileName(QString());
+        return fail(tr("An auto-save exists for this project. Recover or discard it in Shotcut "
+                       "before using MCP."));
+    }
+    return true;
+}
+
 bool MainWindow::open(QString url, const Mlt::Properties *properties, bool play, bool skipConvert)
 {
     // returns false when MLT is unable to open the file, possibly because it has percent sign in the path
@@ -3584,16 +3624,39 @@ void MainWindow::onProducerChanged()
 
 bool MainWindow::saveProjectAs(const QString &filename, bool withRelativePaths)
 {
+    return saveProjectAsInternal(filename, withRelativePaths, true);
+}
+
+bool MainWindow::saveProjectAsNonInteractive(const QString &filename, bool withRelativePaths)
+{
+    return saveProjectAsInternal(filename, withRelativePaths, false);
+}
+
+bool MainWindow::saveProjectAsInternal(const QString &filename,
+                                       bool withRelativePaths,
+                                       bool interactive)
+{
     if (filename.isEmpty())
         return false;
 
     m_timelineDock->stopRecording();
-    if (Util::warnIfNotWritable(filename, this, tr("Save XML")))
-        return false;
+    if (interactive) {
+        if (Util::warnIfNotWritable(filename, this, tr("Save XML")))
+            return false;
+    } else {
+        const QFileInfo destination(filename);
+        if (!QFileInfo(destination.absolutePath()).isWritable()) {
+            LOG_ERROR() << "Save directory is not writable:" << destination.absolutePath();
+            return false;
+        }
+    }
     if (filename == m_currentFile)
         backupPeriodically();
     if (!saveXML(filename, withRelativePaths)) {
-        showSaveError();
+        if (interactive)
+            showSaveError();
+        else
+            LOG_ERROR() << "Failed to save project:" << filename;
         return false;
     }
 
