@@ -378,7 +378,7 @@ QJsonObject McpBridge::projectSnapshot() const
                 {QStringLiteral("index"), itemIndex},
                 {QStringLiteral("start_ms"), static_cast<double>(item.start)},
                 {QStringLiteral("end_ms"), static_cast<double>(item.end)},
-                {QStringLiteral("text"), QString::fromUtf8(item.text)},
+                {QStringLiteral("text"), QString::fromUtf8(item.text.data(), static_cast<qsizetype>(item.text.size()))},
             });
         }
         subtitleTracks.append(QJsonObject{
