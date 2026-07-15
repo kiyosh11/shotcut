@@ -169,8 +169,7 @@ bool McpBridge::applyTimelineOperation(const QJsonObject &operation, QString &er
     if (type == QStringLiteral("add_transition")) {
         const int position = operation.value(QStringLiteral("position")).toInt();
         const bool ripple = operation.value(QStringLiteral("ripple")).toBool();
-        stack->push(
-            new Timeline::AddTransitionCommand(*timeline, track, clip, position, ripple));
+        stack->push(new Timeline::AddTransitionCommand(*timeline, track, clip, position, ripple));
         return true;
     }
 
