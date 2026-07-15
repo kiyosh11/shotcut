@@ -2,7 +2,6 @@ use std::collections::BTreeMap;
 
 use rmcp::schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct OpenProjectRequest {
@@ -104,6 +103,16 @@ pub struct SubtitleSpec {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(untagged)]
+pub enum FilterParameterValue {
+    String(String),
+    Boolean(bool),
+    Integer(i64),
+    Number(f64),
+    Null,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum EditOperation {
     AddTrack {
@@ -200,13 +209,13 @@ pub enum EditOperation {
         /// Filter unique id reported by Shotcut metadata or an existing filter snapshot.
         filter_id: String,
         #[serde(default)]
-        parameters: BTreeMap<String, Value>,
+        parameters: BTreeMap<String, FilterParameterValue>,
     },
     SetFilterParameters {
         track: i32,
         clip: i32,
         filter_index: i32,
-        parameters: BTreeMap<String, Value>,
+        parameters: BTreeMap<String, FilterParameterValue>,
     },
     AddSubtitleTrack {
         name: String,
@@ -271,6 +280,18 @@ mod tests {
         assert_eq!(value["op"], "add_track");
         assert!(value.get("index").is_none());
         assert!(value.get("name").is_none());
+    }
+
+    #[test]
+    fn complex_filter_parameter_values_are_rejected() {
+        let value = serde_json::json!({
+            "op": "add_filter",
+            "track": 0,
+            "clip": 0,
+            "filter_id": "example",
+            "parameters": {"unsupported": [1, 2, 3]}
+        });
+        assert!(serde_json::from_value::<EditOperation>(value).is_err());
     }
 
     #[test]
