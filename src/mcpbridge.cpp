@@ -16,6 +16,7 @@
 #include "docks/encodedock.h"
 #include "docks/timelinedock.h"
 #include "jobqueue.h"
+#include "localpath.h"
 #include "mainwindow.h"
 #include "mltcontroller.h"
 #include "models/attachedfiltersmodel.h"
@@ -40,24 +41,6 @@
 
 namespace {
 constexpr qsizetype kMaximumMessageBytes = 16 * 1024 * 1024;
-
-Qt::CaseSensitivity filePathCaseSensitivity()
-{
-#ifdef Q_OS_WIN
-    return Qt::CaseInsensitive;
-#else
-    return Qt::CaseSensitive;
-#endif
-}
-
-bool localPathsEqual(const QString &left, const QString &right)
-{
-    const QString normalizedLeft = QDir::cleanPath(
-        QDir::fromNativeSeparators(QFileInfo(left).absoluteFilePath()));
-    const QString normalizedRight = QDir::cleanPath(
-        QDir::fromNativeSeparators(QFileInfo(right).absoluteFilePath()));
-    return normalizedLeft.compare(normalizedRight, filePathCaseSensitivity()) == 0;
-}
 
 QString trackTypeName(TrackType type)
 {
@@ -547,7 +530,7 @@ QJsonArray McpBridge::exportJobs(const QString &target) const
             continue;
         if (!requestedTarget.isEmpty()) {
             const QString jobTarget = QFileInfo(job->target()).absoluteFilePath();
-            if (!localPathsEqual(jobTarget, requestedTarget))
+            if (!LocalPath::equal(jobTarget, requestedTarget))
                 continue;
         }
         result.append(QJsonObject{
@@ -561,11 +544,58 @@ QJsonArray McpBridge::exportJobs(const QString &target) const
 
 bool McpBridge::exportTargetInProgress(const QString &target) const
 {
-    for (auto *job : JOBS.jobs()) {
-        if (job && !job->isFinished() && localPathsEqual(job->target(), target))
-            return true;
+    return JOBS.targetIsInProgress(target);
+}
+
+QmlMetadata *McpBridge::editableClipFilterMetadata(const QString &filterId) const
+{
+    auto *metadata = m_window.filterController()->metadata(filterId);
+    if (!metadata)
+        return nullptr;
+    const auto type = metadata->type();
+    const bool supportedType = type == QmlMetadata::Filter || type == QmlMetadata::Link
+                               || type == QmlMetadata::FilterSet;
+    if (!supportedType || metadata->uniqueId().isEmpty() || metadata->isHidden()
+        || metadata->isDeprecated() || metadata->isTrackOnly() || metadata->isOutputOnly()) {
+        return nullptr;
     }
-    return false;
+    return metadata;
+}
+
+bool McpBridge::validateClipFilterAddition(QmlMetadata *metadata,
+                                           Mlt::Producer &producer,
+                                           QString &error) const
+{
+    if (!metadata || !producer.is_valid()) {
+        error = QStringLiteral("clip filter or target producer is unavailable");
+        return false;
+    }
+
+    AttachedFiltersModel attachedFilters;
+    attachedFilters.setProducer(&producer);
+    if (!metadata->allowMultiple()) {
+        for (int row = 0; row < attachedFilters.rowCount(); ++row) {
+            const auto *attachedMetadata = attachedFilters.getMetadata(row);
+            if (attachedMetadata && attachedMetadata->uniqueId() == metadata->uniqueId()) {
+                error = QStringLiteral("filter is already attached and does not allow multiple "
+                                       "instances");
+                return false;
+            }
+        }
+    }
+
+    if (metadata->type() == QmlMetadata::Link) {
+        if (producer.type() != mlt_service_chain_type) {
+            error = QStringLiteral("link filter requires a chain clip");
+            return false;
+        }
+        if (metadata->seekReverse() && producer.get_int("meta.media.has_b_frames") != 0) {
+            error = QStringLiteral("filter requires reverse seeking, but this clip contains "
+                                   "B-frames; convert it manually before using MCP");
+            return false;
+        }
+    }
+    return true;
 }
 
 bool McpBridge::normalizeFilterPathParameter(const QString &filterId,
@@ -574,6 +604,13 @@ bool McpBridge::normalizeFilterPathParameter(const QString &filterId,
                                              QString *normalized,
                                              QString &error) const
 {
+    if (!McpBridgePolicy::richTextParameterWriteAllowed(filterId, name, value.isNull())) {
+        error = QStringLiteral("filter parameter '%1' for '%2' cannot be written through MCP; "
+                               "use plain text and styling, or reset it to null")
+                    .arg(name, filterId);
+        return false;
+    }
+
     const auto kind = McpBridgePolicy::filterPathKind(filterId, name);
     if (kind == McpBridgePolicy::FilterPathKind::NotPath) {
         if (normalized && value.isString())

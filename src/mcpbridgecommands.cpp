@@ -118,10 +118,6 @@ McpBridge::RpcResult McpBridge::openProject(const QJsonObject &params)
     if (!pathAllowed(path, true, &normalized))
         return RpcResult::failure(-32004, QStringLiteral("Project path is outside allowed roots"));
 
-    QString openError;
-    if (!m_window.canOpenProjectNonInteractive(normalized, &openError))
-        return RpcResult::failure(-32003, openError);
-
     const bool discard = params.value(QStringLiteral("discard_unsaved")).toBool(false);
     const bool wasModified = m_window.isWindowModified();
     if (wasModified && !discard)
@@ -129,12 +125,17 @@ McpBridge::RpcResult McpBridge::openProject(const QJsonObject &params)
 
     if (discard)
         m_window.setWindowModified(false);
-    const bool openCallSucceeded = m_window.open(normalized, nullptr, false, true);
+    QString openError;
+    const bool openCallSucceeded
+        = m_window.openProjectNonInteractive(normalized, nullptr, false, true, &openError);
     const QString opened = normalizedPathForPolicy(m_window.fileName(), true);
     if (!openCallSucceeded || opened.compare(normalized, pathCaseSensitivity()) != 0) {
         if (wasModified)
             m_window.setWindowModified(true);
-        return RpcResult::failure(-32003, QStringLiteral("Shotcut did not open that project"));
+        return RpcResult::failure(-32003,
+                                  openError.isEmpty()
+                                      ? QStringLiteral("Shotcut did not open that project")
+                                      : openError);
     }
     return RpcResult::success(editorStatus());
 }
@@ -314,7 +315,10 @@ McpBridge::RpcResult McpBridge::startExport(const QJsonObject &params)
     QString normalized;
     if (!pathAllowed(requiredString(params, QStringLiteral("target")), false, &normalized))
         return RpcResult::failure(-32004, QStringLiteral("Export target is outside allowed roots"));
-    if (QFileInfo::exists(normalized) && !params.value(QStringLiteral("overwrite")).toBool(false))
+    const QFileInfo output(normalized);
+    if (output.exists() && !output.isFile())
+        return RpcResult::failure(-32002, QStringLiteral("Export target must be a regular file"));
+    if (output.exists() && !params.value(QStringLiteral("overwrite")).toBool(false))
         return RpcResult::failure(-32002, QStringLiteral("Export target exists; set overwrite"));
     if (exportTargetInProgress(normalized))
         return RpcResult::failure(-32002, QStringLiteral("An export to this target is active"));
@@ -602,6 +606,14 @@ bool McpBridge::validateOperation(const QJsonObject &operation, QString &error) 
                 error = QStringLiteral("filter_id must be 1 to 512 characters");
                 return false;
             }
+            auto *metadata = editableClipFilterMetadata(filterId);
+            if (!metadata) {
+                error = QStringLiteral("filter_id is unknown or not editable on clips");
+                return false;
+            }
+            Mlt::Producer producer = m_window.timelineDock()->producerForClip(track, clip);
+            if (!validateClipFilterAddition(metadata, producer, error))
+                return false;
         }
         if (type == QStringLiteral("set_filter_parameters")) {
             int filterIndex;

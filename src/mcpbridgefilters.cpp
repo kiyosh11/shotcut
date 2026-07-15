@@ -60,15 +60,18 @@ bool McpBridge::applyFilterOperation(const QJsonObject &operation, QString &erro
 
     if (type == QStringLiteral("add_filter")) {
         Mlt::Producer producer = m_window.timelineDock()->producerForClip(track, clip);
+        auto *metadata = editableClipFilterMetadata(
+            operation.value(QStringLiteral("filter_id")).toString());
+        if (!metadata) {
+            error = QStringLiteral("filter_id is unknown or not editable on clips");
+            return false;
+        }
+        if (!validateClipFilterAddition(metadata, producer, error))
+            return false;
+
         auto *controller = m_window.filterController();
         controller->setCurrentFilter(QmlFilter::DeselectCurrentFilter);
         controller->setProducer(&producer);
-        auto *metadata = controller->metadata(
-            operation.value(QStringLiteral("filter_id")).toString());
-        if (!metadata) {
-            error = QStringLiteral("unknown filter_id");
-            return false;
-        }
         const int filterIndex = controller->attachedModel()->add(metadata);
         if (filterIndex < 0) {
             error = QStringLiteral("Shotcut could not add this filter to the clip");

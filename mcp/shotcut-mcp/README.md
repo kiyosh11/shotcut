@@ -33,6 +33,8 @@ This is powerful editor access. Use a fresh token for each session, keep write a
 
 MCP project opening and export are deliberately noninteractive. Projects that require repair, missing-file relinking, processing-mode conversion, or auto-save recovery must be handled in Shotcut first. Export likewise returns an error when media is missing or a filter analysis is pending; complete the analysis in Shotcut and retry.
 
+MCP intentionally rejects non-null writes to the `html` and `resource` properties of `richText` and `qtext` filters because embedded markup can load external files. Use plain `argument` and styling properties, or insert pre-rendered media from an allowed root.
+
 ## Environment
 
 Shotcut and the Rust MCP process must receive the same token and endpoint. On Windows PowerShell, set the environment before starting the custom Shotcut build and the MCP client:

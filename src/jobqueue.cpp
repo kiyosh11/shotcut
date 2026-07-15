@@ -18,6 +18,7 @@
 #include "jobqueue.h"
 
 #include "Logger.h"
+#include "localpath.h"
 
 #include <QtWidgets>
 #ifdef Q_OS_WIN
@@ -275,7 +276,7 @@ bool JobQueue::targetIsInProgress(const QString &target)
 {
     if (!m_jobs.isEmpty() && !target.isEmpty()) {
         foreach (AbstractJob *job, m_jobs) {
-            if (!job->isFinished() && job->target() == target) {
+            if (!job->isFinished() && LocalPath::equal(job->target(), target)) {
                 return true;
             }
         }

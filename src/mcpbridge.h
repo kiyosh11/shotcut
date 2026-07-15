@@ -20,9 +20,13 @@
 
 #include <memory>
 
+namespace Mlt {
+class Producer;
+}
 class MainWindow;
 class QLocalSocket;
 class QLockFile;
+class QmlMetadata;
 
 class McpBridge : public QObject
 {
@@ -76,6 +80,10 @@ private:
     bool checkRevision(const QJsonObject &params, QString &error) const;
     bool trackExists(int track) const;
     bool clipExists(int track, int clip) const;
+    QmlMetadata *editableClipFilterMetadata(const QString &filterId) const;
+    bool validateClipFilterAddition(QmlMetadata *metadata,
+                                    Mlt::Producer &producer,
+                                    QString &error) const;
     bool normalizeFilterPathParameter(const QString &filterId,
                                       const QString &name,
                                       const QJsonValue &value,

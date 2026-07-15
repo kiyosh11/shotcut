@@ -2328,7 +2328,9 @@ void MainWindow::onAutosaveTimeout()
     }
 }
 
-bool MainWindow::canOpenProjectNonInteractive(const QString &filename, QString *errorMessage)
+bool MainWindow::validateProjectOpenNonInteractive(MltXmlChecker &checker,
+                                                   const QString &filename,
+                                                   QString *errorMessage)
 {
     auto fail = [errorMessage](const QString &message) {
         if (errorMessage)
@@ -2336,7 +2338,6 @@ bool MainWindow::canOpenProjectNonInteractive(const QString &filename, QString *
         return false;
     };
 
-    MltXmlChecker checker;
     const auto checkResult = checker.check(filename);
     if (checkResult == QXmlStreamReader::CustomError) {
         return fail(
@@ -2370,7 +2371,31 @@ bool MainWindow::canOpenProjectNonInteractive(const QString &filename, QString *
 
 bool MainWindow::open(QString url, const Mlt::Properties *properties, bool play, bool skipConvert)
 {
+    return openInternal(url, properties, play, skipConvert, true, nullptr);
+}
+
+bool MainWindow::openProjectNonInteractive(QString url,
+                                           const Mlt::Properties *properties,
+                                           bool play,
+                                           bool skipConvert,
+                                           QString *errorMessage)
+{
+    return openInternal(url, properties, play, skipConvert, false, errorMessage);
+}
+
+bool MainWindow::openInternal(QString url,
+                              const Mlt::Properties *properties,
+                              bool play,
+                              bool skipConvert,
+                              bool interactive,
+                              QString *errorMessage)
+{
     // returns false when MLT is unable to open the file, possibly because it has percent sign in the path
+    auto fail = [errorMessage](const QString &message) {
+        if (errorMessage)
+            *errorMessage = message;
+        return false;
+    };
     LOG_DEBUG() << url;
     bool modified = false;
     bool converted = false;
@@ -2382,30 +2407,44 @@ bool MainWindow::open(QString url, const Mlt::Properties *properties, bool play,
         url = pwd.filePath(url);
         info.setFile(url);
     }
-    if (url.endsWith(".mlt") || url.endsWith(".xml")) {
-        if (url != untitledFileName()) {
-            showStatusMessage(tr("Opening %1").arg(url));
-            QCoreApplication::processEvents();
-        }
-        switch (checker.check(url)) {
-        case QXmlStreamReader::NoError:
-            if (!isCompatibleWithProcessingMode(checker, url, converted)) {
+    const bool isProject = url.endsWith(".mlt") || url.endsWith(".xml");
+    if (!interactive && !isProject)
+        return fail(tr("Noninteractive opening supports only Shotcut project files."));
+
+    if (isProject) {
+        if (interactive) {
+            if (url != untitledFileName()) {
+                showStatusMessage(tr("Opening %1").arg(url));
+                QCoreApplication::processEvents();
+            }
+            switch (checker.check(url)) {
+            case QXmlStreamReader::NoError:
+                if (!isCompatibleWithProcessingMode(checker, url, converted)) {
+                    showStatusMessage(tr("Failed to open ").append(url));
+                    return true;
+                }
+                break;
+            case QXmlStreamReader::CustomError:
+                showIncompatibleProjectMessage(checker.shotcutVersion());
+                return true;
+            default:
                 showStatusMessage(tr("Failed to open ").append(url));
                 return true;
             }
-            break;
-        case QXmlStreamReader::CustomError:
-            showIncompatibleProjectMessage(checker.shotcutVersion());
-            return true;
-        default:
-            showStatusMessage(tr("Failed to open ").append(url));
-            return true;
+            // only check for a modified project when loading a project, not a simple producer
+            if (!continueModified())
+                return true;
+            QCoreApplication::processEvents();
+        } else {
+            if (!validateProjectOpenNonInteractive(checker, url, errorMessage))
+                return false;
+            if (isWindowModified()) {
+                return fail(tr("Save or discard current unsaved edits before opening a project "
+                               "noninteractively."));
+            }
         }
-        // only check for a modified project when loading a project, not a simple producer
-        if (!continueModified())
-            return true;
-        QCoreApplication::processEvents();
-        // close existing project
+
+        // close existing project only after all noninteractive checks have succeeded
         if (playlist()) {
             m_playlistDock->model()->close();
         }
@@ -2413,21 +2452,28 @@ bool MainWindow::open(QString url, const Mlt::Properties *properties, bool play,
             m_timelineDock->model()->close();
         }
         MLT.purgeMemoryPool();
-        if (!isXmlRepaired(checker, url))
-            return true;
-        modified = checkAutoSave(url);
-        if (modified) {
-            if (checker.check(url) == QXmlStreamReader::NoError) {
-                if (!isCompatibleWithProcessingMode(checker, url, converted))
-                    return true;
-            } else {
-                showStatusMessage(tr("Failed to open ").append(url));
-                showIncompatibleProjectMessage(checker.shotcutVersion());
-                return true;
-            }
+
+        if (interactive) {
             if (!isXmlRepaired(checker, url))
                 return true;
+            modified = checkAutoSave(url);
+            if (modified) {
+                if (checker.check(url) == QXmlStreamReader::NoError) {
+                    if (!isCompatibleWithProcessingMode(checker, url, converted))
+                        return true;
+                } else {
+                    showStatusMessage(tr("Failed to open ").append(url));
+                    showIncompatibleProjectMessage(checker.shotcutVersion());
+                    return true;
+                }
+                if (!isXmlRepaired(checker, url))
+                    return true;
+            }
+        } else {
+            QMutexLocker locker(&m_autosaveMutex);
+            m_autosaveFile.reset(new AutoSaveFile(url));
         }
+
         // let the new project change the profile
         if (modified || QFile::exists(url)) {
             MLT.profile().set_explicit(false);
@@ -2436,7 +2482,7 @@ bool MainWindow::open(QString url, const Mlt::Properties *properties, bool play,
         }
     }
     if (!playlist() && !multitrack()) {
-        if (!modified && !continueModified())
+        if (interactive && !modified && !continueModified())
             return true;
         setCurrentFile("");
         setWindowModified(modified);
@@ -2488,9 +2534,11 @@ bool MainWindow::open(QString url, const Mlt::Properties *properties, bool play,
         if (converted)
             saveXML(url);
     } else if (url != untitledFileName()) {
-        showStatusMessage(tr("Failed to open ") + url);
+        const QString message = tr("Failed to open ") + url;
+        if (interactive)
+            showStatusMessage(message);
         emit openFailed(url);
-        return false;
+        return fail(message);
     }
     return true;
 }

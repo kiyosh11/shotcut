@@ -86,6 +86,7 @@ add_executable(shotcut WIN32 MACOSX_BUNDLE
   jobs/videoqualityjob.cpp jobs/videoqualityjob.h
   jobs/whisperjob.cpp jobs/whisperjob.h
   main.cpp
+  localpath.h
   mcpbridge.cpp mcpbridge.h mcpbridgepolicy.h
   mcpbridgecommands.cpp
   mcpbridgeedit.cpp

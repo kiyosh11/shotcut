@@ -30,7 +30,11 @@ inline FilterPathKind filterPathKind(const QString &filterId, const QString &nam
         && key == QStringLiteral("resource")) {
         return FilterPathKind::ExistingFile;
     }
+    if (id == QStringLiteral("gpstext") && key == QStringLiteral("gps.file"))
+        return FilterPathKind::ExistingFile;
     if (id == QStringLiteral("gpsgraphic") && key == QStringLiteral("bg_img_path"))
+        return FilterPathKind::ExistingFile;
+    if (id == QStringLiteral("vidstab") && key == QStringLiteral("results"))
         return FilterPathKind::ExistingFile;
     if (id == QStringLiteral("vidstab") && key == QStringLiteral("filename"))
         return FilterPathKind::WritablePath;
@@ -40,6 +44,18 @@ inline FilterPathKind filterPathKind(const QString &filterId, const QString &nam
         return FilterPathKind::WritablePath;
     }
     return FilterPathKind::NotPath;
+}
+
+// Rich text markup and resource files can load nested external content outside allowed roots.
+// MCP callers can reset these properties, but must use plain text and styling for new content.
+inline bool richTextParameterWriteAllowed(const QString &filterId, const QString &name, bool reset)
+{
+    const QString id = filterId.toLower();
+    const QString key = name.toLower();
+    const bool isRichText = id == QStringLiteral("richtext") || id == QStringLiteral("qtext");
+    const bool isExternalContent = key == QStringLiteral("html")
+                                   || key == QStringLiteral("resource");
+    return !isRichText || !isExternalContent || reset;
 }
 
 inline bool isBuiltInValue(const QString &filterId, const QString &name, const QString &value)
