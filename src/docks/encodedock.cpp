@@ -538,7 +538,8 @@ bool EncodeDock::exportToFile(const QString &target,
     if (!MLT.producer())
         return fail(tr("There is no open producer to export."));
 
-    if (!presetName.isEmpty() && presetName.compare(QStringLiteral("default"), Qt::CaseInsensitive)) {
+    if (!presetName.isEmpty()
+        && presetName.compare(QStringLiteral("default"), Qt::CaseInsensitive) != 0) {
         const QString prefix = QStringLiteral("consumer/avformat/");
         QString match;
         for (int index = 0; m_presets && index < m_presets->count(); ++index) {
