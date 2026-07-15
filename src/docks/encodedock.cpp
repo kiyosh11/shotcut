@@ -504,6 +504,96 @@ bool EncodeDock::isExportInProgress() const
     return !m_immediateJob.isNull();
 }
 
+QStringList EncodeDock::presetNames() const
+{
+    QStringList result{QStringLiteral("default")};
+    const QString prefix = QStringLiteral("consumer/avformat/");
+    if (m_presets && m_presets->is_valid()) {
+        for (int index = 0; index < m_presets->count(); ++index) {
+            const QString key = QString::fromUtf8(m_presets->get_name(index));
+            if (!key.startsWith(prefix))
+                continue;
+            Mlt::Properties preset(
+                static_cast<mlt_properties>(m_presets->get_data(key.toUtf8().constData())));
+            if (preset.is_valid() && !preset.get_int("meta.preset.hidden"))
+                result.append(key.mid(prefix.size()));
+        }
+    }
+    result.removeDuplicates();
+    result.sort(Qt::CaseInsensitive);
+    return result;
+}
+
+bool EncodeDock::exportToFile(const QString &target,
+                              const QString &presetName,
+                              QString *errorMessage)
+{
+    auto fail = [errorMessage](const QString &message) {
+        if (errorMessage)
+            *errorMessage = message;
+        return false;
+    };
+    if (target.isEmpty())
+        return fail(tr("Export target is empty."));
+    if (!MLT.producer())
+        return fail(tr("There is no open producer to export."));
+
+    if (!presetName.isEmpty()
+        && presetName.compare(QStringLiteral("default"), Qt::CaseInsensitive) != 0) {
+        const QString prefix = QStringLiteral("consumer/avformat/");
+        QString match;
+        for (int index = 0; m_presets && index < m_presets->count(); ++index) {
+            const QString key = QString::fromUtf8(m_presets->get_name(index));
+            if (key.compare(presetName, Qt::CaseInsensitive) == 0
+                || (key.startsWith(prefix)
+                    && key.mid(prefix.size()).compare(presetName, Qt::CaseInsensitive) == 0)) {
+                match = key;
+                break;
+            }
+        }
+        if (match.isEmpty())
+            return fail(tr("Unknown export preset: %1").arg(presetName));
+        Mlt::Properties preset(
+            static_cast<mlt_properties>(m_presets->get_data(match.toUtf8().constData())));
+        if (!preset.is_valid())
+            return fail(tr("Invalid export preset: %1").arg(presetName));
+        loadPresetFromProperties(preset);
+    } else if (presetName.compare(QStringLiteral("default"), Qt::CaseInsensitive) == 0) {
+        on_resetButton_clicked();
+    }
+
+    onProducerOpened();
+    const int timelineIndex = ui->fromCombo->findData(QStringLiteral("timeline"));
+    if (timelineIndex < 0)
+        return fail(tr("There is no timeline to export."));
+    ui->fromCombo->setCurrentIndex(timelineIndex);
+    on_fromCombo_currentIndexChanged(timelineIndex);
+
+    auto *producer = fromProducer();
+    if (!producer || !MLT.isSeekable(producer))
+        return fail(tr("The current timeline is not exportable."));
+    if (checkForMissingFiles())
+        return fail(tr("Export stopped because project files are missing."));
+
+    MLT.pause();
+    QFileInfo output(target);
+    Settings.setEncodePath(output.absolutePath());
+    m_outputFilenames = QStringList(target);
+
+    MLT.purgeMemoryPool();
+    const int jobsBefore = JOBS.jobs().size();
+    int threadCount = QThread::idealThreadCount();
+    if (threadCount > 2 && ui->parallelCheckbox->isChecked())
+        threadCount = qMin(threadCount - 1, 4);
+    else
+        threadCount = 1;
+    enqueueAnalysis();
+    enqueueMelt(m_outputFilenames, Settings.playerGPU() ? -1 : -threadCount);
+    if (JOBS.jobs().size() <= jobsBefore)
+        return fail(tr("Shotcut did not create an export job."));
+    return true;
+}
+
 void EncodeDock::onProducerOpened()
 {
     int index = 0;
