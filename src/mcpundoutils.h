@@ -29,21 +29,37 @@ inline UndoState capture(const QUndoStack &stack)
 
 inline bool rollbackLatestMacro(QUndoStack &stack, const UndoState &before)
 {
-    if (stack.index() > before.index && stack.count() > before.count) {
-        auto *failedMacro = const_cast<QUndoCommand *>(stack.command(stack.index() - 1));
-        if (!failedMacro)
-            return false;
+    auto finish = [&]() {
+        const bool restored = stack.index() == before.index && stack.count() == before.count;
+        if (restored && before.clean)
+            stack.setClean();
+        return restored;
+    };
 
-        // QUndoStack checks isObsolete() after undoing the command. This both
-        // reverts the macro and removes it instead of leaving it in redo history.
-        failedMacro->setObsolete(true);
-        stack.undo();
-    }
+    if (stack.index() == before.index && stack.count() == before.count)
+        return finish();
+    if (stack.index() != before.index + 1 || stack.count() != before.count + 1)
+        return false;
 
-    const bool restored = stack.index() == before.index && stack.count() == before.count;
-    if (restored && before.clean)
-        stack.setClean();
-    return restored;
+    // Undo while the macro is still active. QUndoStack deliberately skips undo()
+    // for commands that have already been marked obsolete.
+    stack.undo();
+    if (stack.index() != before.index)
+        return false;
+    if (stack.count() == before.count)
+        return finish();
+    if (stack.count() != before.count + 1)
+        return false;
+
+    // The failed macro is now the next redo command. Marking it obsolete before
+    // redo makes QUndoStack remove it without calling redo(), so no redo history
+    // from the partially applied plan remains.
+    auto *failedMacro = const_cast<QUndoCommand *>(stack.command(stack.index()));
+    if (!failedMacro)
+        return false;
+    failedMacro->setObsolete(true);
+    stack.redo();
+    return finish();
 }
 
 } // namespace McpUndo

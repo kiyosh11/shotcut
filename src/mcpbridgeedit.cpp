@@ -74,7 +74,12 @@ bool McpBridge::applyTimelineOperation(const QJsonObject &operation, QString &er
 
     if (type == QStringLiteral("insert_media")) {
         QString path;
-        pathAllowed(operation.value(QStringLiteral("path")).toString(), true, &path);
+        if (!pathAllowed(operation.value(QStringLiteral("path")).toString(), true, &path)) {
+            error = QStringLiteral("media path is missing or outside allowed roots");
+            return false;
+        }
+        if (!validateMediaResourcePaths(path, error))
+            return false;
         Mlt::Producer producer(MLT.profile(), path.toUtf8().constData());
         if (!producer.is_valid()) {
             error = QStringLiteral("MLT could not open media: %1").arg(path);

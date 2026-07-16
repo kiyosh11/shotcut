@@ -37,8 +37,10 @@ public:
 
     enum { MissingColumn = 0, ReplacementColumn, ColumnCount };
 
+    enum class CheckMode { Default, NoExternalSideEffects };
+
     MltXmlChecker();
-    QXmlStreamReader::Error check(const QString &fileName);
+    QXmlStreamReader::Error check(const QString &fileName, CheckMode mode = CheckMode::Default);
     QString errorString() const;
     bool needsGPU() const { return m_needsGPU; }
     bool needsCPU() const { return m_needsCPU; }
@@ -77,6 +79,7 @@ private:
 
     QXmlStreamReader m_xml;
     QXmlStreamWriter m_newXml;
+    CheckMode m_checkMode;
     bool m_needsGPU;
     bool m_needsCPU;
     bool m_hasEffects;

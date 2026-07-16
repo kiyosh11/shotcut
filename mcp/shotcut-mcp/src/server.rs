@@ -50,7 +50,7 @@ impl ShotcutServer {
 #[tool_router]
 impl ShotcutServer {
     #[tool(
-        description = "Read connection state, project path, revision, undo/redo state, allowed roots, installed clip filters, export presets, and queued jobs.",
+        description = "Read connection state, project path, revision, undo/redo state, allowed roots, installed clip filters, policy-gated export presets, and queued jobs.",
         annotations(
             read_only_hint = true,
             destructive_hint = false,
@@ -156,7 +156,7 @@ impl ShotcutServer {
     }
 
     #[tool(
-        description = "Queue a Shotcut export for the current timeline using a stock preset or the current Export panel settings.",
+        description = "Queue a Shotcut export for the current timeline using MCP-safe defaults or an advertised preset that passes final consumer policy, including exact canonical muxer validation.",
         annotations(
             read_only_hint = false,
             destructive_hint = true,

@@ -23,9 +23,12 @@
 #include <MltProperties.h>
 #include <QDockWidget>
 #include <QDomElement>
+#include <QMap>
 #include <QSortFilterProxyModel>
 #include <QStandardItemModel>
 #include <QStringList>
+
+#include <functional>
 
 class QTreeWidgetItem;
 class QTemporaryFile;
@@ -51,6 +54,14 @@ class EncodeDock : public QDockWidget
     Q_OBJECT
 
 public:
+    using ExportTargetPreflight
+        = std::function<bool(const QString &requestedTarget,
+                             const QString &consumerTarget,
+                             bool imageSequence,
+                             int pass,
+                             const QMap<QString, QString> &consumerProperties,
+                             QString *errorMessage)>;
+
     explicit EncodeDock(QWidget *parent = 0);
     ~EncodeDock();
 
@@ -59,7 +70,8 @@ public:
     QStringList presetNames() const;
     bool exportToFile(const QString &target,
                       const QString &presetName = QString(),
-                      QString *errorMessage = nullptr);
+                      QString *errorMessage = nullptr,
+                      const ExportTargetPreflight &targetPreflight = ExportTargetPreflight());
 
 signals:
     void captureStateChanged(bool);
@@ -184,29 +196,45 @@ private:
     Mlt::Properties *collectProperties(int realtime, bool includeProfile = false);
     void collectProperties(QDomElement &node, int realtime);
     void setSubtitleProperties(QDomElement &node, Mlt::Producer *service);
-    QPoint addConsumerElement(
-        Mlt::Producer *service, QDomDocument &dom, const QString &target, int realtime, int pass);
+    QPoint addConsumerElement(Mlt::Producer *service,
+                              QDomDocument &dom,
+                              const QString &consumerTarget,
+                              const QString &requestedTarget,
+                              bool imageSequence,
+                              int realtime,
+                              int pass,
+                              const ExportTargetPreflight &targetPreflight,
+                              QString *errorMessage,
+                              bool *consumerAccepted);
     MeltJob *convertReframe(Mlt::Producer *service,
                             QTemporaryFile *tmp,
-                            const QString &target,
+                            const QString &consumerTarget,
+                            const QString &requestedTarget,
+                            bool imageSequence,
                             int realtime,
                             int pass,
-                            const QThread::Priority priority);
+                            const QThread::Priority priority,
+                            const ExportTargetPreflight &targetPreflight,
+                            QString *errorMessage,
+                            bool *consumerAccepted);
     MeltJob *createMeltJob(Mlt::Producer *service,
                            const QString &target,
                            int realtime,
                            int pass = 0,
                            const QThread::Priority priority = Settings.jobPriority(),
                            bool interactive = true,
-                           QString *errorMessage = nullptr);
+                           QString *errorMessage = nullptr,
+                           const ExportTargetPreflight &targetPreflight = ExportTargetPreflight());
     void runMelt(const QString &target, int realtime = -1);
     bool hasPendingAnalysis() const;
     void enqueueAnalysis();
     bool enqueueMelt(const QStringList &targets,
                      int realtime,
                      bool interactive = true,
-                     QString *errorMessage = nullptr);
+                     QString *errorMessage = nullptr,
+                     const ExportTargetPreflight &targetPreflight = ExportTargetPreflight());
     void encode(const QString &target);
+    void applyPresetWithDefaults(const QString &presetKey, Mlt::Properties &preset);
     void resetOptions();
     Mlt::Producer *fromProducer(bool usePlaylistBin = false) const;
     static void filterCodecParams(const QString &vcodec, QStringList &other);

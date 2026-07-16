@@ -1454,7 +1454,12 @@ function get_subproject {
           debug "No git repo, need to check out"
           feedback_status "Cloning git sources for $1"
           if test "$1" = "shotcut" -a -d "$REPOLOC/.git"; then
-              cmd git -c "safe.directory=$REPOLOC" --no-pager clone --quiet --recurse-submodules "$REPOLOC" "$1" || die "Unable to git clone source for $1 from $REPOLOC"
+              (
+                  SAFE_GIT_CONFIG=`mktemp` || exit 1
+                  trap 'rm -f "$SAFE_GIT_CONFIG"' EXIT
+                  cmd git config --file "$SAFE_GIT_CONFIG" --add safe.directory "$REPOLOC/.git" &&
+                      cmd env GIT_CONFIG_GLOBAL="$SAFE_GIT_CONFIG" git --no-pager clone --quiet --recurse-submodules "$REPOLOC" "$1"
+              ) || die "Unable to git clone source for $1 from $REPOLOC"
           else
               cmd git --no-pager clone --quiet --recurse-submodules "$REPOLOC" "$1" || die "Unable to git clone source for $1 from $REPOLOC"
           fi

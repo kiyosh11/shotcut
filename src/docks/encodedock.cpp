@@ -22,6 +22,8 @@
 #include "dialogs/addencodepresetdialog.h"
 #include "dialogs/listselectiondialog.h"
 #include "dialogs/multifileexportdialog.h"
+#include "encodepresetutils.h"
+#include "exporttemporaryfileutils.h"
 #include "findanalysisfilterparser.h"
 #include "gpuinfo.h"
 #include "jobqueue.h"
@@ -527,7 +529,8 @@ QStringList EncodeDock::presetNames() const
 
 bool EncodeDock::exportToFile(const QString &target,
                               const QString &presetName,
-                              QString *errorMessage)
+                              QString *errorMessage,
+                              const ExportTargetPreflight &targetPreflight)
 {
     auto setError = [errorMessage](const QString &message) {
         if (errorMessage)
@@ -615,8 +618,9 @@ bool EncodeDock::exportToFile(const QString &target,
     if (!presetMatch.isEmpty()) {
         Mlt::Properties preset(
             static_cast<mlt_properties>(m_presets->get_data(presetMatch.toUtf8().constData())));
-        loadPresetFromProperties(preset);
-    } else if (presetName.compare(QStringLiteral("default"), Qt::CaseInsensitive) == 0) {
+        applyPresetWithDefaults(presetMatch, preset);
+    } else if (presetName.compare(QStringLiteral("default"), Qt::CaseInsensitive) == 0
+               || (presetName.isEmpty() && targetPreflight)) {
         on_resetButton_clicked();
     }
 
@@ -655,7 +659,8 @@ bool EncodeDock::exportToFile(const QString &target,
     const bool queued = enqueueMelt(requestedOutputFilenames,
                                     Settings.playerGPU() ? -1 : -threadCount,
                                     false,
-                                    &enqueueError);
+                                    &enqueueError,
+                                    targetPreflight);
     if (!queued) {
         return fail(enqueueError.isEmpty()
                         ? tr("Shotcut did not create an export job for the requested target.")
@@ -1522,9 +1527,19 @@ void EncodeDock::setSubtitleProperties(QDomElement &node, Mlt::Producer *service
     }
 }
 
-QPoint EncodeDock::addConsumerElement(
-    Mlt::Producer *service, QDomDocument &dom, const QString &target, int realtime, int pass)
+QPoint EncodeDock::addConsumerElement(Mlt::Producer *service,
+                                      QDomDocument &dom,
+                                      const QString &consumerTarget,
+                                      const QString &requestedTarget,
+                                      bool imageSequence,
+                                      int realtime,
+                                      int pass,
+                                      const ExportTargetPreflight &targetPreflight,
+                                      QString *errorMessage,
+                                      bool *consumerAccepted)
 {
+    if (consumerAccepted)
+        *consumerAccepted = true;
     QDomElement consumerNode = dom.createElement("consumer");
     QDomNodeList profiles = dom.elementsByTagName("profile");
     if (profiles.isEmpty())
@@ -1532,14 +1547,14 @@ QPoint EncodeDock::addConsumerElement(
     else
         dom.documentElement().insertAfter(consumerNode, profiles.at(profiles.length() - 1));
     consumerNode.setAttribute("mlt_service", "avformat");
-    consumerNode.setAttribute("target", pass == 1 ? kNullTarget : target);
+    consumerNode.setAttribute("target", pass == 1 ? kNullTarget : consumerTarget);
     collectProperties(consumerNode, realtime);
     if ("libx265" == ui->videoCodecCombo->currentText()) {
         if (pass == 1 || pass == 2) {
             QString x265params = consumerNode.attribute("x265-params");
             x265params = QStringLiteral("pass=%1:stats=%2:%3")
                              .arg(pass)
-                             .arg(QString(target).replace(":", "\\:") + "_2pass.log")
+                             .arg(QString(consumerTarget).replace(":", "\\:") + "_2pass.log")
                              .arg(x265params);
             consumerNode.setAttribute("x265-params", x265params);
         }
@@ -1549,7 +1564,7 @@ QPoint EncodeDock::addConsumerElement(
             encParams << QStringLiteral("passes=2");
             encParams << QStringLiteral("pass=%1").arg(pass);
             encParams << QStringLiteral("stats=%1")
-                             .arg(QString(target).replace(":", "\\:") + "_2pass.log");
+                             .arg(QString(consumerTarget).replace(":", "\\:") + "_2pass.log");
             QString origParams = consumerNode.attribute("svtav1-params");
             if (!origParams.isEmpty())
                 encParams << origParams;
@@ -1558,7 +1573,7 @@ QPoint EncodeDock::addConsumerElement(
     } else {
         if (pass == 1 || pass == 2) {
             consumerNode.setAttribute("pass", pass);
-            consumerNode.setAttribute("passlogfile", target + "_2pass.log");
+            consumerNode.setAttribute("passlogfile", consumerTarget + "_2pass.log");
         }
         if (pass == 1) {
             consumerNode.setAttribute("fastfirstpass", 1);
@@ -1569,10 +1584,34 @@ QPoint EncodeDock::addConsumerElement(
         }
     }
     if (ui->formatCombo->currentIndex() == 0 && ui->audioCodecCombo->currentIndex() == 0
-        && (target.endsWith(".mp4") || target.endsWith(".mov")))
+        && (consumerTarget.endsWith(".mp4") || consumerTarget.endsWith(".mov")))
         consumerNode.setAttribute("strict", "experimental");
     if (!ui->disableSubtitlesCheckbox->isChecked())
         setSubtitleProperties(consumerNode, service);
+
+    if (targetPreflight) {
+        QMap<QString, QString> properties;
+        const QDomNamedNodeMap attributes = consumerNode.attributes();
+        for (int index = 0; index < attributes.length(); ++index) {
+            const QDomAttr attribute = attributes.item(index).toAttr();
+            properties.insert(attribute.name(), attribute.value());
+        }
+        if (!targetPreflight(requestedTarget,
+                             consumerTarget,
+                             imageSequence,
+                             pass,
+                             properties,
+                             errorMessage)) {
+            if (consumerAccepted)
+                *consumerAccepted = false;
+            if (errorMessage && errorMessage->isEmpty())
+                *errorMessage = tr("Export consumer properties were rejected.");
+            return QPoint();
+        }
+        // Do not let an accepted preset override the validated sink after the policy check.
+        consumerNode.setAttribute("mlt_service", "avformat");
+        consumerNode.setAttribute("target", consumerTarget);
+    }
 
     return QPoint(consumerNode.hasAttribute("frame_rate_num")
                       ? consumerNode.attribute("frame_rate_num").toInt()
@@ -1584,11 +1623,18 @@ QPoint EncodeDock::addConsumerElement(
 
 MeltJob *EncodeDock::convertReframe(Mlt::Producer *service,
                                     QTemporaryFile *tmp,
-                                    const QString &target,
+                                    const QString &consumerTarget,
+                                    const QString &requestedTarget,
+                                    bool imageSequence,
                                     int realtime,
                                     int pass,
-                                    const QThread::Priority priority)
+                                    const QThread::Priority priority,
+                                    const ExportTargetPreflight &targetPreflight,
+                                    QString *errorMessage,
+                                    bool *consumerAccepted)
 {
+    if (consumerAccepted)
+        *consumerAccepted = true;
     MeltJob *job = nullptr;
 
     // Look for the reframe filter
@@ -1668,10 +1714,29 @@ MeltJob *EncodeDock::convertReframe(Mlt::Producer *service,
             // Parse XML to add consumer element
             QXmlStreamReader xmlReader(consumer.get("string"));
             QDomDocument dom;
-            dom.setContent(&xmlReader, false);
+            if (!dom.setContent(&xmlReader, false)) {
+                if (errorMessage)
+                    *errorMessage = tr("Shotcut could not parse the reframe export project.");
+                if (consumerAccepted)
+                    *consumerAccepted = false;
+                return nullptr;
+            }
 
-            auto fps = addConsumerElement(service, dom, target, realtime, pass);
-            job = new EncodeJob(QDir::toNativeSeparators(target),
+            auto fps = addConsumerElement(service,
+                                          dom,
+                                          consumerTarget,
+                                          requestedTarget,
+                                          imageSequence,
+                                          realtime,
+                                          pass,
+                                          targetPreflight,
+                                          errorMessage,
+                                          consumerAccepted);
+            if (consumerAccepted && !*consumerAccepted)
+                return nullptr;
+            // The consumer may use a numbered image-sequence path, but the job must retain
+            // the caller's requested target for status reporting and duplicate protection.
+            job = new EncodeJob(QDir::toNativeSeparators(requestedTarget),
                                 dom.toString(2),
                                 fps.x(),
                                 fps.y(),
@@ -1688,7 +1753,8 @@ MeltJob *EncodeDock::createMeltJob(Mlt::Producer *service,
                                    int pass,
                                    const QThread::Priority priority,
                                    bool interactive,
-                                   QString *errorMessage)
+                                   QString *errorMessage,
+                                   const ExportTargetPreflight &targetPreflight)
 {
     auto fail = [errorMessage](const QString &message) -> MeltJob * {
         if (errorMessage)
@@ -1716,6 +1782,7 @@ MeltJob *EncodeDock::createMeltJob(Mlt::Producer *service,
 
     // if image sequence, change filename to include number
     QString mytarget = target;
+    bool imageSequence = false;
     if (!ui->disableVideoCheckbox->isChecked()) {
         const QString &codec = ui->videoCodecCombo->currentText();
         if (codec == "bmp" || codec == "dpx" || codec == "png" || codec == "ppm"
@@ -1725,6 +1792,7 @@ MeltJob *EncodeDock::createMeltJob(Mlt::Producer *service,
             QFileInfo fi(mytarget);
             mytarget
                 = QStringLiteral("%1/%2-%05d.%3").arg(fi.path(), fi.baseName(), fi.completeSuffix());
+            imageSequence = true;
         }
     }
 
@@ -1750,9 +1818,9 @@ MeltJob *EncodeDock::createMeltJob(Mlt::Producer *service,
         }
 
     // get temp filename
-    auto tmp = new QTemporaryFile{Util::writableTemporaryFile(target)};
-    if (!tmp->open()) {
-        LOG_ERROR() << "Failed to create temporary file" << tmp->fileName();
+    auto tmp = Util::writableTemporaryFile(target);
+    if (!ExportTemporaryFileUtils::ensureOpen(tmp)) {
+        LOG_ERROR() << "Failed to create temporary file" << (tmp ? tmp->fileName() : QString());
         delete tmp;
         return fail(tr("Shotcut could not create the temporary export project."));
     }
@@ -1765,11 +1833,16 @@ MeltJob *EncodeDock::createMeltJob(Mlt::Producer *service,
     QFile f1(fileName);
     if (!f1.open(QIODevice::ReadOnly)) {
         LOG_ERROR() << "Failed to open XML file for reading" << fileName;
+        delete tmp;
         return fail(tr("Shotcut could not read the temporary export project."));
     }
     QXmlStreamReader xmlReader(&f1);
     QDomDocument dom(fileName);
-    dom.setContent(&xmlReader, false);
+    if (!dom.setContent(&xmlReader, false)) {
+        f1.close();
+        delete tmp;
+        return fail(tr("Shotcut could not parse the temporary export project."));
+    }
     f1.close();
 
     // Check if the target file is a member of the project.
@@ -1781,6 +1854,7 @@ MeltJob *EncodeDock::createMeltJob(Mlt::Producer *service,
                                  tr("You cannot write to a file that is in your project.\n"
                                     "Try again with a different folder or file name."));
         }
+        delete tmp;
         return fail(tr("The export target is used by the project. Choose a different file."));
     }
 
@@ -1789,10 +1863,38 @@ MeltJob *EncodeDock::createMeltJob(Mlt::Producer *service,
     for (auto i = 0; i < playlists.length(); ++i)
         playlists.item(i).toElement().setAttribute("autoclose", 1);
 
-    MeltJob *job = convertReframe(service, tmp, mytarget, realtime, pass, priority);
+    bool consumerAccepted = true;
+    MeltJob *job = convertReframe(service,
+                                  tmp,
+                                  mytarget,
+                                  target,
+                                  imageSequence,
+                                  realtime,
+                                  pass,
+                                  priority,
+                                  targetPreflight,
+                                  errorMessage,
+                                  &consumerAccepted);
+    if (!consumerAccepted) {
+        delete tmp;
+        return nullptr;
+    }
 
     if (!job) {
-        auto fps = addConsumerElement(service, dom, mytarget, realtime, pass);
+        auto fps = addConsumerElement(service,
+                                      dom,
+                                      mytarget,
+                                      target,
+                                      imageSequence,
+                                      realtime,
+                                      pass,
+                                      targetPreflight,
+                                      errorMessage,
+                                      &consumerAccepted);
+        if (!consumerAccepted) {
+            delete tmp;
+            return nullptr;
+        }
         job = new EncodeJob(QDir::toNativeSeparators(target),
                             dom.toString(2),
                             fps.x(),
@@ -1912,7 +2014,8 @@ void EncodeDock::enqueueAnalysis()
 bool EncodeDock::enqueueMelt(const QStringList &targets,
                              int realtime,
                              bool interactive,
-                             QString *errorMessage)
+                             QString *errorMessage,
+                             const ExportTargetPreflight &targetPreflight)
 {
     Mlt::Producer *service = fromProducer(true);
     const int pass = (ui->videoRateControlCombo->currentIndex() != RateControlQuality
@@ -1925,38 +2028,41 @@ bool EncodeDock::enqueueMelt(const QStringList &targets,
                       && ui->dualPassCheckbox->isEnabled() && ui->dualPassCheckbox->isChecked())
                          ? 1
                          : 0;
-    auto enqueueForTarget = [this, pass, interactive, errorMessage](Mlt::Producer *producer,
-                                                                    const QString &target,
-                                                                    int realtime) {
-        MeltJob *first = createMeltJob(producer,
+    auto enqueueForTarget =
+        [this, pass, interactive, errorMessage, targetPreflight](Mlt::Producer *producer,
+                                                                 const QString &target,
+                                                                 int realtime) {
+            MeltJob *first = createMeltJob(producer,
+                                           target,
+                                           realtime,
+                                           pass,
+                                           Settings.jobPriority(),
+                                           interactive,
+                                           errorMessage,
+                                           targetPreflight);
+            if (!first)
+                return false;
+
+            MeltJob *second = nullptr;
+            if (pass) {
+                second = createMeltJob(producer,
                                        target,
                                        realtime,
-                                       pass,
+                                       2,
                                        Settings.jobPriority(),
                                        interactive,
-                                       errorMessage);
-        if (!first)
-            return false;
-
-        MeltJob *second = nullptr;
-        if (pass) {
-            second = createMeltJob(producer,
-                                   target,
-                                   realtime,
-                                   2,
-                                   Settings.jobPriority(),
-                                   interactive,
-                                   errorMessage);
-            if (!second) {
-                delete first;
-                return false;
+                                       errorMessage,
+                                       targetPreflight);
+                if (!second) {
+                    delete first;
+                    return false;
+                }
             }
-        }
-        JOBS.add(first);
-        if (second)
-            JOBS.add(second);
-        return true;
-    };
+            JOBS.add(first);
+            if (second)
+                JOBS.add(second);
+            return true;
+        };
 
     if (service) {
         return !targets.isEmpty() && enqueueForTarget(service, targets.constFirst(), realtime);
@@ -2210,6 +2316,22 @@ static double getBufferSize(Mlt::Properties &preset, const char *property)
     return double(qRound(size / 1024 / 8 * 100)) / 100;
 }
 
+void EncodeDock::applyPresetWithDefaults(const QString &presetKey, Mlt::Properties &preset)
+{
+    resetOptions();
+    const QString profileName = EncodePresetUtils::profileName(presetKey);
+    if (!profileName.isEmpty() && m_profiles
+        && m_profiles->get_data(profileName.toLatin1().constData())) {
+        Mlt::Profile profile(profileName.toLatin1().constData());
+        ui->widthSpinner->setValue(profile.width());
+        ui->heightSpinner->setValue(profile.height());
+        ui->aspectNumSpinner->setValue(profile.display_aspect_num());
+        ui->aspectDenSpinner->setValue(profile.display_aspect_den());
+        ui->scanModeCombo->setCurrentIndex(profile.progressive());
+        ui->fpsSpinner->setValue(profile.fps());
+    }
+    loadPresetFromProperties(preset);
+}
 void EncodeDock::on_presetsTree_clicked(const QModelIndex &index)
 {
     if (!index.parent().isValid())
@@ -2229,26 +2351,8 @@ void EncodeDock::on_presetsTree_clicked(const QModelIndex &index)
             preset = new Mlt::Properties(
                 (mlt_properties) m_presets->get_data(name.toLatin1().constData()));
         }
-        if (preset->is_valid()) {
-            QStringList textParts = name.split('/');
-
-            resetOptions();
-            if (textParts.count() > 3) {
-                // textParts = ['consumer', 'avformat', profile, preset].
-                QString folder = textParts.at(2);
-                if (m_profiles->get_data(folder.toLatin1().constData())) {
-                    // only set these fields if the folder is a profile
-                    Mlt::Profile p(folder.toLatin1().constData());
-                    ui->widthSpinner->setValue(p.width());
-                    ui->heightSpinner->setValue(p.height());
-                    ui->aspectNumSpinner->setValue(p.display_aspect_num());
-                    ui->aspectDenSpinner->setValue(p.display_aspect_den());
-                    ui->scanModeCombo->setCurrentIndex(p.progressive());
-                    ui->fpsSpinner->setValue(p.fps());
-                }
-            }
-            loadPresetFromProperties(*preset);
-        }
+        if (preset->is_valid())
+            applyPresetWithDefaults(name, *preset);
         delete preset;
     } else {
         on_resetButton_clicked();

@@ -97,8 +97,13 @@ bool McpBridge::applyFilterParameters(
     auto *controller = m_window.filterController();
     controller->setCurrentFilter(QmlFilter::DeselectCurrentFilter);
     controller->setProducer(&producer);
-    if (filterIndex < 0 || filterIndex >= controller->attachedModel()->rowCount()) {
-        error = QStringLiteral("filter_index does not exist");
+    QString filterId;
+    QString filterService;
+    if (!resolveEditableAttachedFilter(*controller->attachedModel(),
+                                       filterIndex,
+                                       filterId,
+                                       filterService,
+                                       error)) {
         return false;
     }
 
@@ -109,13 +114,17 @@ bool McpBridge::applyFilterParameters(
         return false;
     }
 
-    const QString filterId = filter->objectNameOrService();
     filter->startUndoTracking();
     filter->startUndoParameterCommand(QStringLiteral("AI filter parameters"));
     for (auto it = parameters.constBegin(); it != parameters.constEnd(); ++it) {
         const auto value = it.value();
         QString parameterValue;
-        if (!normalizeFilterPathParameter(filterId, it.key(), value, &parameterValue, error)) {
+        if (!normalizeFilterPathParameter(filterId,
+                                          filterService,
+                                          it.key(),
+                                          value,
+                                          &parameterValue,
+                                          error)) {
             filter->endUndoCommand();
             filter->stopUndoTracking();
             return false;

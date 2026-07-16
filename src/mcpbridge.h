@@ -23,6 +23,7 @@
 namespace Mlt {
 class Producer;
 }
+class AttachedFiltersModel;
 class MainWindow;
 class QLocalSocket;
 class QLockFile;
@@ -80,17 +81,29 @@ private:
     bool checkRevision(const QJsonObject &params, QString &error) const;
     bool trackExists(int track) const;
     bool clipExists(int track, int clip) const;
+    bool isBundledFilterMetadata(const QmlMetadata *metadata) const;
+    bool bundledMltServiceAllowed(const QString &element,
+                                  const QString &service,
+                                  const QString &filterId) const;
+    bool resolveEditableAttachedFilter(const AttachedFiltersModel &attachedFilters,
+                                       int filterIndex,
+                                       QString &filterId,
+                                       QString &filterService,
+                                       QString &error) const;
     QmlMetadata *editableClipFilterMetadata(const QString &filterId) const;
     bool validateClipFilterAddition(QmlMetadata *metadata,
                                     Mlt::Producer &producer,
                                     QString &error) const;
     bool normalizeFilterPathParameter(const QString &filterId,
+                                      const QString &service,
                                       const QString &name,
                                       const QJsonValue &value,
                                       QString *normalized,
                                       QString &error) const;
     bool pathAllowed(const QString &path, bool mustExist, QString *normalized = nullptr) const;
     QString normalizedPathForPolicy(const QString &path, bool mustExist) const;
+    bool validateProjectResourcePaths(const QString &path, QString &error) const;
+    bool validateMediaResourcePaths(const QString &path, QString &error) const;
     void loadAllowedRoots();
     void advanceRevision();
 

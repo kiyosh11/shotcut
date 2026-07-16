@@ -8,11 +8,11 @@ The Rust server communicates over standard input/output with the MCP client and 
 
 The server exposes these MCP tools:
 
-- editor_status and project_snapshot inspect the live editor, timeline, clips, installed clip-filter catalog, attached filters, subtitles, selection, export presets, and undo revision.
+- editor_status and project_snapshot inspect the live editor, timeline, clips, bundled clip-filter catalog, attached filters, subtitles, selection, export presets, and undo revision.
 - open_project and save_project load and save Shotcut .mlt or .xml projects.
 - apply_edit_plan validates or applies up to 500 typed operations as one undoable transaction.
 - undo and redo use Shotcut's native history.
-- export_video queues an export with Shotcut's existing Export panel and job queue.
+- export_video queues an export through Shotcut's job queue using MCP-safe defaults or an advertised preset that passes final consumer policy.
 - export_status reports queued, running, completed, and failed exports.
 
 Typed edit operations cover tracks, media insertion, clip moves/trims/splits/removal, clip gain and fades, transitions, track state, filters, and subtitle tracks/items. The edit_full_video prompt guides an AI through a complete inspect, plan, dry-run, apply, save, and export workflow.
@@ -23,7 +23,9 @@ The bridge is disabled unless SHOTCUT_MCP_ENABLE=1. When enabled it:
 
 - accepts only same-user local socket or named-pipe connections;
 - requires a session token of at least 32 characters on every request;
-- restricts project, media, save, export, and file-valued filter parameters to configured filesystem roots;
+- restricts direct project, media, save, export, and file-valued filter paths to configured filesystem roots, validates supported nested MLT resource paths, and admits only bundled filter metadata plus a fixed set of Shotcut structural transitions;
+- resets an omitted export preset to MCP-safe defaults; `editor_status.export_presets` is a discoverable but policy-gated list, and unsupported preset properties require manual export;
+- validates the resolved consumer target after preset selection, requires exact canonical allowlisted muxer tokens, generates the sole image-sequence frame token, and performs bounded checks of existing sequence frames and their overwrite policy;
 - exposes typed editor operations and never exposes a shell or arbitrary command execution;
 - uses optimistic revision checks so an AI cannot silently overwrite newer manual edits;
 - supports dry-run validation, refuses to overwrite native redo history, and removes a failed plan from history after reverting it;
@@ -34,6 +36,12 @@ This is powerful editor access. Use a fresh token for each session, keep write a
 MCP project opening and export are deliberately noninteractive. Projects that require repair, missing-file relinking, processing-mode conversion, or auto-save recovery must be handled in Shotcut first. Export likewise returns an error when media is missing or a filter analysis is pending; complete the analysis in Shotcut and retry.
 
 MCP intentionally rejects non-null writes to the `html` and `resource` properties of `richText` and `qtext` filters because embedded markup can load external files. Use plain `argument` and styling properties, or insert pre-rendered media from an allowed root.
+
+Noninteractive project opening also rejects network URLs (including UNC paths and remote-host `file://` URLs), known or content-sniffed playlist and manifest formats, active markup/animation loaders, WebVfx resources, and existing rich-text `html` or `resource` content because their transitive access cannot be safely enumerated. MLT loader files and explicit XML producer resources are checked recursively; cycles, DTD/entities, inline XML, consumers, links, external profiles, secondary roots, and relative project `root` attributes fail closed. Ordinary relative media resources remain supported when MLT defines them relative to the project directory or a canonical absolute root, and ordinary contained XML filter resources are not misclassified as MLT projects. Unknown or active producer loader services, extension-provided or unknown filter services, unknown transition services, active GPU shader and model-directory filters, unsupported dynamic AVFilter services and unapproved AVFilter options fail closed. JACK, JackRack, LADSPA, LV2, VST2, and OpenFX filter ID and service families are manual-only and are excluded from the catalog, add, live-edit, and project-opening paths. Nested mask selectors use exact raw safe tokens; Mask: Apply permits only an empty selector or exact `qtblend`. Affine backgrounds permit only exact lowercase `color:` or `colour:` producers with `0` or 3-, 4-, 6-, or 8-digit ASCII hexadecimal color payloads. Explicit Dust producer factories, luma/composite producer factories other than empty or exact `loader`, and sensitive nested transition producer/luma paths fail closed. The MCP filter catalog and parameter editor also exclude links, extension-generated metadata, and user filter sets; those and projects that need other rejected compatibility features can still be handled manually in Shotcut.
+
+The noninteractive checker validates the original project before compatibility rewriting, disables proxy discovery and legacy WebVfx file loading during that pass, validates any rewritten temporary project, and revalidates the exact file immediately before MLT opens it. Aggregate nested XML size, depth, element, property, and resource counts are bounded. Dynamic query, fragment, glob, and all-files path syntax is rejected. Image-sequence reads require one well-formed printf token and at least one member; directory scans and member counts are bounded, and every member is canonicalized and inspected. Direct MCP writes to file-valued filter parameters must use explicit absolute local files inside an allowed root; project XML may use contained relative references where MLT defines them relative to the project.
+
+Allowed roots are an application-level guard, not an operating-system sandbox around third-party media decoders. MCP rejects known text manifests on insertion, but opaque binary media formats may contain decoder-specific references that Shotcut cannot enumerate in advance. Use trusted media files and keep normal MCP write approvals enabled.
 
 ## Environment
 
@@ -69,7 +77,7 @@ cmake --build /path/to/build
 cmake --install /path/to/build
 ```
 
-`SHOTCUT_BUILD_MCP_SERVER` defaults to `OFF`. When enabled, CMake requires an existing `cargo` executable and fails clearly if it cannot find one. It never installs Rust, substitutes a prebuilt sidecar, or downloads an upstream Shotcut binary. Cargo can fetch the exact locked crates through its configured registry; use a vendored or offline Cargo configuration when builds must not access the network.
+`SHOTCUT_BUILD_MCP_SERVER` defaults to `OFF`. When enabled, CMake requires an existing `cargo` executable and fails clearly if it cannot find one. CMake itself does not invoke a Rust installer, substitute a prebuilt sidecar, or download an upstream Shotcut binary. If `cargo` is managed by rustup and the pinned Rust 1.97.0 toolchain is missing, rustup may download and install it when Cargo starts; preinstall that toolchain or configure rustup for offline use when builds must not access the network. Cargo can also fetch the exact locked crates through its configured registry; use a vendored or offline Cargo configuration to prevent that.
 
 The custom CMake target builds into `<build>/mcp-target/release`. Installation places the sidecar beside the Shotcut executable on Windows, in the application bundle on macOS, or in the configured binary directory on Unix.
 
@@ -97,7 +105,7 @@ All edit indices are validated against the current snapshot. Structural changes 
 
 Video tracks occupy the logical indexes before audio tracks. An explicit track insertion index must stay within that kind's region. When `index` is omitted, Shotcut adds a video track at the top or an audio track at the end.
 
-Filter operations use Shotcut filter IDs from the installed build. Media analysis, transcription, or generative assets can be performed by other approved MCP tools, then inserted through this server as files under an allowed root.
+Filter operations use IDs from the bundled filter catalog returned by editor_status. Media analysis, transcription, or generative assets can be performed by other approved MCP tools, then inserted through this server as files under an allowed root.
 
 ## Development status
 

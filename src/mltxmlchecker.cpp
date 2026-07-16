@@ -17,6 +17,8 @@
 
 #include "mltxmlchecker.h"
 
+#include "mltxmlproperty.h"
+
 #include "Logger.h"
 #include "mltcontroller.h"
 #include "proxymanager.h"
@@ -100,7 +102,8 @@ static int cairoBlendModeToCompositing(QString mode, bool *isExact = nullptr)
 }
 
 MltXmlChecker::MltXmlChecker()
-    : m_needsGPU(false)
+    : m_checkMode(CheckMode::Default)
+    , m_needsGPU(false)
     , m_needsCPU(false)
     , m_hasEffects(false)
     , m_isConverted(false)
@@ -113,9 +116,10 @@ MltXmlChecker::MltXmlChecker()
     m_unlinkedFilesModel.setColumnCount(ColumnCount);
 }
 
-QXmlStreamReader::Error MltXmlChecker::check(const QString &fileName)
+QXmlStreamReader::Error MltXmlChecker::check(const QString &fileName, CheckMode mode)
 {
     LOG_DEBUG() << "begin";
+    m_checkMode = mode;
 
     QFile file(fileName);
     m_tempFile.reset(new QTemporaryFile(QFileInfo(fileName).dir().filePath("shotcut-XXXXXX.mlt")));
@@ -219,8 +223,10 @@ void MltXmlChecker::readMlt()
             if (element == "property") {
                 isPropertyElement = true;
                 if (isMltClass(mlt_class)) {
-                    const QString name = m_xml.attributes().value("name").toString();
-                    m_properties << MltProperty(name, m_xml.readElementText());
+                    const auto attributes = m_xml.attributes();
+                    const QString name = attributes.value("name").toString();
+                    const QString textValue = m_xml.readElementText();
+                    m_properties << MltProperty(name, MltXmlProperty::value(attributes, textValue));
                 }
             } else {
                 if (element == "tractor")
@@ -299,7 +305,8 @@ void MltXmlChecker::processProperties()
                 if (checkNumericString(prefix))
                     p.second = prefix + p.second.mid(p.second.indexOf(':') + 1);
             }
-            fixUnlinkedFile(p.second);
+            if (m_checkMode == CheckMode::Default)
+                fixUnlinkedFile(p.second);
         }
         newProperties << MltProperty(p.first, p.second);
     }
@@ -308,16 +315,18 @@ void MltXmlChecker::processProperties()
         || mlt_class == "chain" || mlt_class == "link") {
         checkGpuEffects(mlt_service);
         checkCpuEffects(mlt_service);
-        checkUnlinkedFile(mlt_service);
+        if (m_checkMode == CheckMode::Default)
+            checkUnlinkedFile(mlt_service);
         checkIncludesSelf(newProperties);
         checkLumaAlphaOver(mlt_service, newProperties);
         updateMaskApply(mlt_service, newProperties);
         checkAudioGain(mlt_service, newProperties);
         replaceWebVfxCropFilters(mlt_service, newProperties);
-        replaceWebVfxChoppyFilter(mlt_service, newProperties);
+        if (m_checkMode == CheckMode::Default)
+            replaceWebVfxChoppyFilter(mlt_service, newProperties);
         replaceMovitServices(mlt_service, newProperties);
         bool proxyEnabled = Settings.proxyEnabled();
-        if (proxyEnabled)
+        if (proxyEnabled && m_checkMode == CheckMode::Default)
             checkForProxy(mlt_service, newProperties);
 
         // Second pass: amend property values.

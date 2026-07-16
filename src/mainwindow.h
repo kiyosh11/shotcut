@@ -30,6 +30,8 @@
 #include <QTimer>
 #include <QUrl>
 
+#include <functional>
+
 #define EXIT_RESTART (42)
 #define EXIT_RESET (43)
 
@@ -64,6 +66,7 @@ class MainWindow : public QMainWindow
 
 public:
     enum LayoutMode { Custom = 0, Logging, Editing, Effects, Color, Audio, PlayerOnly };
+    using ProjectResourceValidator = std::function<bool(const QString &, QString *)>;
 
     static MainWindow &singleton();
     ~MainWindow();
@@ -78,6 +81,7 @@ public:
                                    const Mlt::Properties *properties = nullptr,
                                    bool play = false,
                                    bool skipConvert = true,
+                                   const ProjectResourceValidator &resourceValidator = {},
                                    QString *errorMessage = nullptr);
     static void changeTheme(const QString &theme);
     PlaylistDock *playlistDock() const { return m_playlistDock; }
@@ -176,12 +180,14 @@ private:
     bool checkAutoSave(QString &url);
     bool validateProjectOpenNonInteractive(MltXmlChecker &checker,
                                            const QString &filename,
+                                           const ProjectResourceValidator &resourceValidator,
                                            QString *errorMessage);
     bool openInternal(QString url,
                       const Mlt::Properties *properties,
                       bool play,
                       bool skipConvert,
                       bool interactive,
+                      const ProjectResourceValidator &resourceValidator,
                       QString *errorMessage);
     bool saveProjectAsInternal(const QString &filename, bool withRelativePaths, bool interactive);
     bool saveConvertedXmlFile(MltXmlChecker &checker, QString &fileName);

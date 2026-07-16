@@ -66,6 +66,8 @@ add_executable(shotcut WIN32 MACOSX_BUNDLE
   docks/scopedock.cpp docks/scopedock.h
   docks/subtitlesdock.cpp docks/subtitlesdock.h
   docks/timelinedock.cpp docks/timelinedock.h
+  encodepresetutils.h
+  exporttemporaryfileutils.h
   FlatpakWrapperGenerator.cpp FlatpakWrapperGenerator.h
   gpuinfo.cpp gpuinfo.h
   htmlgenerator.h htmlgenerator.cpp
@@ -88,14 +90,16 @@ add_executable(shotcut WIN32 MACOSX_BUNDLE
   main.cpp
   localpath.h
   mcpbridge.cpp mcpbridge.h mcpbridgepolicy.h
+  mcpexporttargetpolicy.cpp mcpexporttargetpolicy.h
   mcpbridgecommands.cpp
   mcpbridgeedit.cpp
   mcpbridgefilters.cpp
   mcpundoutils.h
+  mcpxmlpathvalidator.cpp mcpxmlpathvalidator.h
   mainwindow.cpp mainwindow.h
   mainwindow.ui
   mltcontroller.cpp mltcontroller.h
-  mltxmlchecker.cpp mltxmlchecker.h
+  mltxmlchecker.cpp mltxmlchecker.h mltxmlproperty.h
   models/actionsmodel.cpp models/actionsmodel.h
   models/addonservicemodel.cpp models/addonservicemodel.h
   models/alignclipsmodel.cpp models/alignclipsmodel.h

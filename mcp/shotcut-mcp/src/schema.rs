@@ -40,9 +40,12 @@ pub struct HistoryRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ExportVideoRequest {
-    /// Absolute output file path.
+    /// Absolute output file path. Image-sequence paths must not contain a `%` token because
+    /// Shotcut generates the sole frame-number token.
     pub target: String,
-    /// Shotcut/MLT stock preset name. Omit to use the current Export panel settings.
+    /// Shotcut/MLT preset name; advertised presets remain subject to the final consumer policy,
+    /// including exact canonical allowlisted muxer tokens.
+    /// Omit to use Shotcut's MCP-safe default export settings.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preset: Option<String>,
     /// Permit replacing an existing target file.
