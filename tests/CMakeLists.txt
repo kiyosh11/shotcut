@@ -24,3 +24,26 @@ add_executable(test_mcpbridgepolicy
 target_include_directories(test_mcpbridgepolicy PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(test_mcpbridgepolicy PRIVATE Qt6::Core Qt6::Test)
 add_test(NAME mcpbridgepolicy COMMAND test_mcpbridgepolicy)
+
+add_executable(test_mltxmlproperty
+  test_mltxmlproperty.cpp
+)
+target_include_directories(test_mltxmlproperty PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(test_mltxmlproperty PRIVATE Qt6::Core Qt6::Test)
+add_test(NAME mltxmlproperty COMMAND test_mltxmlproperty)
+
+add_executable(test_mcpxmlpathvalidator
+  test_mcpxmlpathvalidator.cpp
+  ${CMAKE_SOURCE_DIR}/src/mcpxmlpathvalidator.cpp
+)
+target_include_directories(test_mcpxmlpathvalidator PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(test_mcpxmlpathvalidator PRIVATE Qt6::Core Qt6::Test)
+add_test(NAME mcpxmlpathvalidator COMMAND test_mcpxmlpathvalidator)
+
+add_executable(test_mcpexporttargetpolicy
+  test_mcpexporttargetpolicy.cpp
+  ${CMAKE_SOURCE_DIR}/src/mcpexporttargetpolicy.cpp
+)
+target_include_directories(test_mcpexporttargetpolicy PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(test_mcpexporttargetpolicy PRIVATE Qt6::Core Qt6::Test)
+add_test(NAME mcpexporttargetpolicy COMMAND test_mcpexporttargetpolicy)

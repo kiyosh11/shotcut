@@ -9,6 +9,9 @@
 
 #include "mcpbridge.h"
 
+#include "mcpbridgepolicy.h"
+#include "mcpexporttargetpolicy.h"
+
 #include "mcpundoutils.h"
 
 #include "docks/encodedock.h"
@@ -125,9 +128,21 @@ McpBridge::RpcResult McpBridge::openProject(const QJsonObject &params)
 
     if (discard)
         m_window.setWindowModified(false);
+    const MainWindow::ProjectResourceValidator resourceValidator =
+        [this](const QString &checkedFile, QString *errorMessage) {
+            QString validationError;
+            const bool valid = validateProjectResourcePaths(checkedFile, validationError);
+            if (errorMessage)
+                *errorMessage = validationError;
+            return valid;
+        };
     QString openError;
-    const bool openCallSucceeded
-        = m_window.openProjectNonInteractive(normalized, nullptr, false, true, &openError);
+    const bool openCallSucceeded = m_window.openProjectNonInteractive(normalized,
+                                                                      nullptr,
+                                                                      false,
+                                                                      true,
+                                                                      resourceValidator,
+                                                                      &openError);
     const QString opened = normalizedPathForPolicy(m_window.fileName(), true);
     if (!openCallSucceeded || opened.compare(normalized, pathCaseSensitivity()) != 0) {
         if (wasModified)
@@ -316,16 +331,40 @@ McpBridge::RpcResult McpBridge::startExport(const QJsonObject &params)
     if (!pathAllowed(requiredString(params, QStringLiteral("target")), false, &normalized))
         return RpcResult::failure(-32004, QStringLiteral("Export target is outside allowed roots"));
     const QFileInfo output(normalized);
+    const bool overwrite = params.value(QStringLiteral("overwrite")).toBool(false);
     if (output.exists() && !output.isFile())
         return RpcResult::failure(-32002, QStringLiteral("Export target must be a regular file"));
-    if (output.exists() && !params.value(QStringLiteral("overwrite")).toBool(false))
+    if (output.exists() && !overwrite)
         return RpcResult::failure(-32002, QStringLiteral("Export target exists; set overwrite"));
     if (exportTargetInProgress(normalized))
         return RpcResult::failure(-32002, QStringLiteral("An export to this target is active"));
 
     QString error;
     const QString preset = params.value(QStringLiteral("preset")).toString();
-    if (!m_window.encodeDock()->exportToFile(normalized, preset, &error))
+    const auto targetPreflight = [this, overwrite](const QString &requestedTarget,
+                                                   const QString &consumerTarget,
+                                                   bool imageSequence,
+                                                   int pass,
+                                                   const QMap<QString, QString> &consumerProperties,
+                                                   QString *errorMessage) {
+        const McpExportTargetPolicy::PathAuthorizer pathAuthorizer =
+            [this](const QString &path, bool mustExist) { return pathAllowed(path, mustExist); };
+        if (!McpExportTargetPolicy::validateConsumerProperties(consumerTarget,
+                                                               imageSequence,
+                                                               pass,
+                                                               consumerProperties,
+                                                               pathAuthorizer,
+                                                               errorMessage)) {
+            return false;
+        }
+        return McpExportTargetPolicy::validateConsumerTarget(requestedTarget,
+                                                             consumerTarget,
+                                                             imageSequence,
+                                                             overwrite,
+                                                             pathAuthorizer,
+                                                             errorMessage);
+    };
+    if (!m_window.encodeDock()->exportToFile(normalized, preset, &error, targetPreflight))
         return RpcResult::failure(-32003, error.isEmpty() ? QStringLiteral("Export failed") : error);
 
     return RpcResult::success(QJsonObject{
@@ -521,6 +560,8 @@ bool McpBridge::validateOperation(const QJsonObject &operation, QString &error) 
             error = QStringLiteral("media path is missing or outside allowed roots");
             return false;
         }
+        if (!validateMediaResourcePaths(normalized, error))
+            return false;
         int position;
         if (!jsonInteger(operation, QStringLiteral("position"), &position) || position < 0) {
             error = QStringLiteral("position must be a non-negative frame");
@@ -600,6 +641,7 @@ bool McpBridge::validateOperation(const QJsonObject &operation, QString &error) 
     } else if (type == QStringLiteral("add_filter")
                || type == QStringLiteral("set_filter_parameters")) {
         QString filterId;
+        QString filterService;
         if (type == QStringLiteral("add_filter")) {
             filterId = requiredString(operation, QStringLiteral("filter_id"));
             if (filterId.isEmpty() || filterId.size() > 512) {
@@ -614,6 +656,7 @@ bool McpBridge::validateOperation(const QJsonObject &operation, QString &error) 
             Mlt::Producer producer = m_window.timelineDock()->producerForClip(track, clip);
             if (!validateClipFilterAddition(metadata, producer, error))
                 return false;
+            filterService = metadata->mlt_service();
         }
         if (type == QStringLiteral("set_filter_parameters")) {
             int filterIndex;
@@ -625,16 +668,13 @@ bool McpBridge::validateOperation(const QJsonObject &operation, QString &error) 
             Mlt::Producer producer = m_window.timelineDock()->producerForClip(track, clip);
             AttachedFiltersModel attachedFilters;
             attachedFilters.setProducer(&producer);
-            if (filterIndex >= attachedFilters.rowCount()) {
-                error = QStringLiteral("filter_index does not exist");
+            if (!resolveEditableAttachedFilter(attachedFilters,
+                                               filterIndex,
+                                               filterId,
+                                               filterService,
+                                               error)) {
                 return false;
             }
-            const auto *metadata = attachedFilters.getMetadata(filterIndex);
-            if (!metadata || metadata->uniqueId().isEmpty()) {
-                error = QStringLiteral("filter_index does not identify an editable filter");
-                return false;
-            }
-            filterId = metadata->uniqueId();
         }
 
         const auto parametersValue = operation.value(QStringLiteral("parameters"));
@@ -646,9 +686,7 @@ bool McpBridge::validateOperation(const QJsonObject &operation, QString &error) 
         for (auto it = parameters.constBegin(); it != parameters.constEnd(); ++it) {
             const QString name = it.key();
             const auto value = it.value();
-            if (name.isEmpty() || name.size() > 256 || name.startsWith(QLatin1Char('_'))
-                || name == QStringLiteral("mlt_service")
-                || name.startsWith(QStringLiteral("shotcut:"))) {
+            if (!McpBridgePolicy::filterParameterNameAllowed(name)) {
                 error = QStringLiteral("filter parameter '%1' is reserved or invalid").arg(name);
                 return false;
             }
@@ -663,12 +701,17 @@ bool McpBridge::validateOperation(const QJsonObject &operation, QString &error) 
                 error = QStringLiteral("filter parameter '%1' exceeds numeric limit").arg(name);
                 return false;
             }
+            if (value.isString() && !McpBridgePolicy::cStringValueAllowed(value.toString())) {
+                error = QStringLiteral("filter parameter '%1' contains an embedded null").arg(name);
+                return false;
+            }
             if (value.isString() && value.toString().size() > 1024 * 1024) {
                 error = QStringLiteral("filter parameter '%1' is too large").arg(name);
                 return false;
             }
-            if (!normalizeFilterPathParameter(filterId, name, value, nullptr, error))
+            if (!normalizeFilterPathParameter(filterId, filterService, name, value, nullptr, error)) {
                 return false;
+            }
         }
     }
     return true;

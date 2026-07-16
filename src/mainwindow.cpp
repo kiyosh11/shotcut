@@ -2330,6 +2330,7 @@ void MainWindow::onAutosaveTimeout()
 
 bool MainWindow::validateProjectOpenNonInteractive(MltXmlChecker &checker,
                                                    const QString &filename,
+                                                   const ProjectResourceValidator &resourceValidator,
                                                    QString *errorMessage)
 {
     auto fail = [errorMessage](const QString &message) {
@@ -2338,13 +2339,31 @@ bool MainWindow::validateProjectOpenNonInteractive(MltXmlChecker &checker,
         return false;
     };
 
-    const auto checkResult = checker.check(filename);
+    if (resourceValidator) {
+        QString resourceError;
+        if (!resourceValidator(filename, &resourceError)) {
+            return fail(resourceError.isEmpty()
+                            ? tr("Project resources are outside the MCP safety policy.")
+                            : resourceError);
+        }
+    }
+
+    const auto checkResult = checker.check(filename,
+                                           MltXmlChecker::CheckMode::NoExternalSideEffects);
     if (checkResult == QXmlStreamReader::CustomError) {
         return fail(
             tr("This project requires a newer Shotcut version (%1).").arg(checker.shotcutVersion()));
     }
     if (checkResult != QXmlStreamReader::NoError)
         return fail(tr("Project XML could not be read: %1").arg(checker.errorString()));
+    if (resourceValidator && checker.isUpdated()) {
+        QString resourceError;
+        if (!resourceValidator(checker.tempFile().fileName(), &resourceError)) {
+            return fail(resourceError.isEmpty()
+                            ? tr("Project resources are outside the MCP safety policy.")
+                            : resourceError);
+        }
+    }
     if ((checker.needsGPU() && !Settings.playerGPU())
         || (checker.needsCPU() && Settings.playerGPU())) {
         return fail(tr("This project requires processing-mode conversion. Open it manually "
@@ -2371,16 +2390,17 @@ bool MainWindow::validateProjectOpenNonInteractive(MltXmlChecker &checker,
 
 bool MainWindow::open(QString url, const Mlt::Properties *properties, bool play, bool skipConvert)
 {
-    return openInternal(url, properties, play, skipConvert, true, nullptr);
+    return openInternal(url, properties, play, skipConvert, true, {}, nullptr);
 }
 
 bool MainWindow::openProjectNonInteractive(QString url,
                                            const Mlt::Properties *properties,
                                            bool play,
                                            bool skipConvert,
+                                           const ProjectResourceValidator &resourceValidator,
                                            QString *errorMessage)
 {
-    return openInternal(url, properties, play, skipConvert, false, errorMessage);
+    return openInternal(url, properties, play, skipConvert, false, resourceValidator, errorMessage);
 }
 
 bool MainWindow::openInternal(QString url,
@@ -2388,6 +2408,7 @@ bool MainWindow::openInternal(QString url,
                               bool play,
                               bool skipConvert,
                               bool interactive,
+                              const ProjectResourceValidator &resourceValidator,
                               QString *errorMessage)
 {
     // returns false when MLT is unable to open the file, possibly because it has percent sign in the path
@@ -2436,7 +2457,7 @@ bool MainWindow::openInternal(QString url,
                 return true;
             QCoreApplication::processEvents();
         } else {
-            if (!validateProjectOpenNonInteractive(checker, url, errorMessage))
+            if (!validateProjectOpenNonInteractive(checker, url, resourceValidator, errorMessage))
                 return false;
             if (isWindowModified()) {
                 return fail(tr("Save or discard current unsaved edits before opening a project "
@@ -2494,6 +2515,14 @@ bool MainWindow::openInternal(QString url,
             MLT.profile().set_explicit(false);
     }
     QString urlToOpen = checker.isUpdated() ? checker.tempFile().fileName() : url;
+    if (!interactive && resourceValidator) {
+        QString resourceError;
+        if (!resourceValidator(urlToOpen, &resourceError)) {
+            return fail(resourceError.isEmpty()
+                            ? tr("Project resources are outside the MCP safety policy.")
+                            : resourceError);
+        }
+    }
     if (!MLT.open(QDir::fromNativeSeparators(urlToOpen),
                   QDir::fromNativeSeparators(url),
                   skipConvert)

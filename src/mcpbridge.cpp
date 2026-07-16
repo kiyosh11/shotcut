@@ -10,6 +10,7 @@
 #include "mcpbridge.h"
 
 #include "mcpbridgepolicy.h"
+#include "mcpxmlpathvalidator.h"
 
 #include "Logger.h"
 #include "controllers/filtercontroller.h"
@@ -24,6 +25,8 @@
 #include "models/multitrackmodel.h"
 #include "models/subtitlesmodel.h"
 #include "qmltypes/qmlmetadata.h"
+#include "qmltypes/qmlutilities.h"
+#include "settings.h"
 #include "shotcut_mlt_properties.h"
 
 #include <MltFilter.h>
@@ -41,6 +44,19 @@
 
 namespace {
 constexpr qsizetype kMaximumMessageBytes = 16 * 1024 * 1024;
+
+bool pathWithinRoot(const QString &candidatePath, const QString &rootPath)
+{
+    const QString candidate = LocalPath::normalized(candidatePath);
+    QString root = LocalPath::normalized(rootPath);
+    if (candidate.isEmpty() || root.isEmpty())
+        return false;
+    if (candidate.compare(root, LocalPath::caseSensitivity()) == 0)
+        return true;
+    if (!root.endsWith(QLatin1Char('/')))
+        root.append(QLatin1Char('/'));
+    return candidate.startsWith(root, LocalPath::caseSensitivity());
+}
 
 QString trackTypeName(TrackType type)
 {
@@ -330,27 +346,21 @@ QJsonObject McpBridge::editorStatus() const
     auto *metadataModel = m_window.filterController()->metadataModel();
     for (int index = 0; index < metadataModel->sourceRowCount(); ++index) {
         const auto *metadata = metadataModel->getFromSource(index);
-        if (!metadata || metadata->isHidden() || metadata->isDeprecated() || metadata->isTrackOnly()
-            || metadata->isOutputOnly()) {
+        if (!metadata || !isBundledFilterMetadata(metadata) || metadata->isHidden()
+            || metadata->isDeprecated() || metadata->isTrackOnly() || metadata->isOutputOnly()
+            || !McpBridgePolicy::filterIdentitiesActiveAllowed(metadata->uniqueId(),
+                                                               metadata->mlt_service())) {
             continue;
         }
-        const auto metadataType = metadata->type();
-        if (metadataType != QmlMetadata::Filter && metadataType != QmlMetadata::Link
-            && metadataType != QmlMetadata::FilterSet) {
+        if (metadata->type() != QmlMetadata::Filter)
             continue;
-        }
         const QString id = metadata->uniqueId();
         if (id.isEmpty())
             continue;
-        QString catalogType = QStringLiteral("filter");
-        if (metadataType == QmlMetadata::Link)
-            catalogType = QStringLiteral("link");
-        else if (metadataType == QmlMetadata::FilterSet)
-            catalogType = QStringLiteral("filter_set");
         filterCatalog.append(QJsonObject{
             {QStringLiteral("id"), id},
             {QStringLiteral("name"), metadata->name()},
-            {QStringLiteral("type"), catalogType},
+            {QStringLiteral("type"), QStringLiteral("filter")},
             {QStringLiteral("audio"), metadata->isAudio()},
             {QStringLiteral("clip_only"), metadata->isClipOnly()},
             {QStringLiteral("allow_multiple"), metadata->allowMultiple()},
@@ -370,6 +380,7 @@ QJsonObject McpBridge::editorStatus() const
         {QStringLiteral("can_redo"), stack && stack->canRedo()},
         {QStringLiteral("allowed_roots"), roots},
         {QStringLiteral("export_presets"), presets},
+        {QStringLiteral("export_presets_policy_gated"), true},
         {QStringLiteral("filter_catalog"), filterCatalog},
         {QStringLiteral("jobs"), exportJobs()},
     };
@@ -420,13 +431,26 @@ QJsonObject McpBridge::projectSnapshot() const
                     QScopedPointer<Mlt::Service> service(attachedFilters.getService(filterIndex));
                     if (!service || !service->is_valid())
                         continue;
+                    const QString actualService
+                        = QString::fromUtf8(service->get("mlt_service")).trimmed();
+                    const bool actualIsFilter = service->type() == mlt_service_filter_type;
                     const auto *metadata = attachedFilters.getMetadata(filterIndex);
-                    QString id = metadata ? metadata->uniqueId() : QString();
-                    if (id.isEmpty())
-                        id = QString::fromUtf8(service->get("mlt_service"));
-                    const QString serviceType = metadata && metadata->type() == QmlMetadata::Link
+                    QString id = actualService;
+                    if (metadata && isBundledFilterMetadata(metadata)
+                        && McpBridgePolicy::attachedFilterIdentityAllowed(
+                            metadata->uniqueId(),
+                            metadata->mlt_service(),
+                            actualService,
+                            actualIsFilter,
+                            bundledMltServiceAllowed(QStringLiteral("filter"),
+                                                     actualService,
+                                                     metadata->uniqueId()))) {
+                        id = metadata->uniqueId();
+                    }
+                    const QString serviceType = actualIsFilter ? QStringLiteral("filter")
+                                                : service->type() == mlt_service_link_type
                                                     ? QStringLiteral("link")
-                                                    : QStringLiteral("filter");
+                                                    : QStringLiteral("service");
                     QJsonObject parameters;
                     for (int propertyIndex = 0; propertyIndex < service->count(); ++propertyIndex) {
                         const QString name = QString::fromUtf8(service->get_name(propertyIndex));
@@ -547,16 +571,115 @@ bool McpBridge::exportTargetInProgress(const QString &target) const
     return JOBS.targetIsInProgress(target);
 }
 
+bool McpBridge::isBundledFilterMetadata(const QmlMetadata *metadata) const
+{
+    if (!metadata || metadata->type() != QmlMetadata::Filter
+        || metadata->objectName().startsWith(QStringLiteral("addOn."))) {
+        return false;
+    }
+
+    QDir bundledRoot = QmlUtilities::qmlDir();
+    if (!bundledRoot.cd(QStringLiteral("filters")))
+        return false;
+    return pathWithinRoot(metadata->path().absolutePath(), bundledRoot.absolutePath());
+}
+
+bool McpBridge::bundledMltServiceAllowed(const QString &element,
+                                         const QString &service,
+                                         const QString &filterId) const
+{
+    if (element.compare(QStringLiteral("transition"), Qt::CaseInsensitive) == 0) {
+        return filterId.isEmpty() && McpBridgePolicy::coreTransitionServiceAllowed(service);
+    }
+    if (element.compare(QStringLiteral("filter"), Qt::CaseInsensitive) != 0)
+        return false;
+
+    auto *metadataModel = m_window.filterController()->metadataModel();
+    for (int index = 0; index < metadataModel->sourceRowCount(); ++index) {
+        const auto *metadata = metadataModel->getFromSource(index);
+        if (!metadata || metadata->type() != QmlMetadata::Filter
+            || !isBundledFilterMetadata(metadata)
+            || metadata->mlt_service().compare(service, Qt::CaseInsensitive) != 0) {
+            continue;
+        }
+        if (filterId.isEmpty() || metadata->uniqueId().compare(filterId, Qt::CaseInsensitive) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool McpBridge::resolveEditableAttachedFilter(const AttachedFiltersModel &attachedFilters,
+                                              int filterIndex,
+                                              QString &filterId,
+                                              QString &filterService,
+                                              QString &error) const
+{
+    if (filterIndex < 0 || filterIndex >= attachedFilters.rowCount()) {
+        error = QStringLiteral("filter_index does not exist");
+        return false;
+    }
+
+    const auto *metadata = attachedFilters.getMetadata(filterIndex);
+    QScopedPointer<Mlt::Service> actualFilter(attachedFilters.getService(filterIndex));
+    if (!metadata || !isBundledFilterMetadata(metadata) || metadata->type() != QmlMetadata::Filter
+        || !actualFilter || !actualFilter->is_valid()) {
+        error = QStringLiteral("filter_index does not identify an editable bundled filter");
+        return false;
+    }
+
+    const QString id = metadata->uniqueId();
+    const QString actualService = QString::fromUtf8(actualFilter->get("mlt_service")).trimmed();
+    const bool actualIsFilter = actualFilter->type() == mlt_service_filter_type;
+    const bool bundledPair = bundledMltServiceAllowed(QStringLiteral("filter"), actualService, id);
+    if (!McpBridgePolicy::attachedFilterIdentityAllowed(id,
+                                                        metadata->mlt_service(),
+                                                        actualService,
+                                                        actualIsFilter,
+                                                        bundledPair)) {
+        error = QStringLiteral("filter_index does not identify an editable bundled filter");
+        return false;
+    }
+
+    const QString nestedService = QString::fromUtf8(actualFilter->get("filter"));
+    if (!McpBridgePolicy::nestedFilterParameterWriteAllowed(actualService,
+                                                            QStringLiteral("filter"),
+                                                            nestedService,
+                                                            false)) {
+        error = QStringLiteral("filter_index uses an active or unknown nested mask filter");
+        return false;
+    }
+    const QString transitionService = QString::fromUtf8(actualFilter->get("transition"));
+    if (!McpBridgePolicy::maskApplyTransitionServiceAllowed(actualService, transitionService)) {
+        error = QStringLiteral("filter_index uses an unsafe Mask: Apply transition service");
+        return false;
+    }
+    const QString affineBackground = QString::fromUtf8(actualFilter->get("background"));
+    if (!McpBridgePolicy::affineBackgroundServiceAllowed(actualService, affineBackground)) {
+        error = QStringLiteral("filter_index uses an unsafe affine background producer");
+        return false;
+    }
+    const QString dustFactory = QString::fromUtf8(actualFilter->get("factory"));
+    if (!McpBridgePolicy::dustFactoryServiceAllowed(actualService, dustFactory)) {
+        error = QStringLiteral("filter_index uses an explicit Dust producer factory");
+        return false;
+    }
+
+    filterId = id;
+    filterService = actualService;
+    return true;
+}
+
 QmlMetadata *McpBridge::editableClipFilterMetadata(const QString &filterId) const
 {
     auto *metadata = m_window.filterController()->metadata(filterId);
-    if (!metadata)
+    if (!metadata || !isBundledFilterMetadata(metadata))
         return nullptr;
-    const auto type = metadata->type();
-    const bool supportedType = type == QmlMetadata::Filter || type == QmlMetadata::Link
-                               || type == QmlMetadata::FilterSet;
-    if (!supportedType || metadata->uniqueId().isEmpty() || metadata->isHidden()
-        || metadata->isDeprecated() || metadata->isTrackOnly() || metadata->isOutputOnly()) {
+    if (metadata->type() != QmlMetadata::Filter || metadata->uniqueId().isEmpty()
+        || metadata->isHidden() || metadata->isDeprecated() || metadata->isTrackOnly()
+        || metadata->isOutputOnly()
+        || !McpBridgePolicy::filterIdentitiesActiveAllowed(metadata->uniqueId(),
+                                                           metadata->mlt_service())) {
         return nullptr;
     }
     return metadata;
@@ -569,6 +692,37 @@ bool McpBridge::validateClipFilterAddition(QmlMetadata *metadata,
     if (!metadata || !producer.is_valid()) {
         error = QStringLiteral("clip filter or target producer is unavailable");
         return false;
+    }
+    if (!isBundledFilterMetadata(metadata)) {
+        error = QStringLiteral("extension and generated filters cannot be added through MCP");
+        return false;
+    }
+    if (!McpBridgePolicy::filterIdentitiesActiveAllowed(metadata->uniqueId(),
+                                                        metadata->mlt_service())) {
+        error = QStringLiteral("active-content filters cannot be added through MCP");
+        return false;
+    }
+
+    const auto applicability
+        = McpBridgePolicy::clipFilterApplicability(Settings.playerGPU(),
+                                                   metadata->needsGPU(),
+                                                   metadata->isGpuCompatible(),
+                                                   metadata->seekReverse(),
+                                                   QString::fromUtf8(producer.get("mlt_service")));
+    switch (applicability) {
+    case McpBridgePolicy::FilterApplicability::RequiresGpu:
+        error = QStringLiteral("filter requires GPU processing, but Shotcut is using CPU "
+                               "processing");
+        return false;
+    case McpBridgePolicy::FilterApplicability::GpuIncompatible:
+        error = QStringLiteral("filter is incompatible with Shotcut GPU processing");
+        return false;
+    case McpBridgePolicy::FilterApplicability::ReverseUnsupported:
+        error = QStringLiteral("filter requires reverse seeking, which is not supported for "
+                               "xml-clip producers");
+        return false;
+    case McpBridgePolicy::FilterApplicability::Allowed:
+        break;
     }
 
     AttachedFiltersModel attachedFilters;
@@ -583,35 +737,114 @@ bool McpBridge::validateClipFilterAddition(QmlMetadata *metadata,
             }
         }
     }
-
-    if (metadata->type() == QmlMetadata::Link) {
-        if (producer.type() != mlt_service_chain_type) {
-            error = QStringLiteral("link filter requires a chain clip");
-            return false;
-        }
-        if (metadata->seekReverse() && producer.get_int("meta.media.has_b_frames") != 0) {
-            error = QStringLiteral("filter requires reverse seeking, but this clip contains "
-                                   "B-frames; convert it manually before using MCP");
-            return false;
-        }
-    }
     return true;
 }
 
 bool McpBridge::normalizeFilterPathParameter(const QString &filterId,
+                                             const QString &service,
                                              const QString &name,
                                              const QJsonValue &value,
                                              QString *normalized,
                                              QString &error) const
 {
-    if (!McpBridgePolicy::richTextParameterWriteAllowed(filterId, name, value.isNull())) {
+    if (!McpBridgePolicy::filterParameterNameAllowed(name)) {
+        error = QStringLiteral("filter parameter '%1' is reserved or invalid").arg(name);
+        return false;
+    }
+    if (value.isString() && !McpBridgePolicy::cStringValueAllowed(value.toString())) {
+        error = QStringLiteral("filter parameter '%1' contains an embedded null").arg(name);
+        return false;
+    }
+    if (!McpBridgePolicy::filterIdentitiesActiveAllowed(filterId, service)) {
+        error = QStringLiteral("active-content filter parameters cannot be changed through MCP");
+        return false;
+    }
+    if (!McpBridgePolicy::nestedFilterPathParameterWriteAllowed(service, name, value.isNull())) {
+        error = QStringLiteral("nested mask filter path parameters can only be reset through MCP");
+        return false;
+    }
+    const bool maskApplyTransition
+        = service.trimmed().compare(QStringLiteral("mask_apply"), Qt::CaseInsensitive) == 0
+          && name.trimmed().compare(QStringLiteral("transition"), Qt::CaseInsensitive) == 0;
+    if (maskApplyTransition) {
+        QString rawValue;
+        bool reset = false;
+        if (!McpBridgePolicy::filterStringOrResetValue(value, &rawValue, &reset)
+            || !McpBridgePolicy::maskApplyTransitionParameterWriteAllowed(service,
+                                                                          name,
+                                                                          rawValue,
+                                                                          reset)) {
+            error = QStringLiteral("Mask: Apply transition must be empty or exactly qtblend");
+            return false;
+        }
+    }
+    if (!McpBridgePolicy::nestedTransitionPathParameterWriteAllowed(service, name, value.isNull())) {
+        error = QStringLiteral("nested Mask: Apply transition paths can only be reset through MCP");
+        return false;
+    }
+    const bool affineBackground
+        = service.trimmed().compare(QStringLiteral("affine"), Qt::CaseInsensitive) == 0
+          && name.trimmed().compare(QStringLiteral("background"), Qt::CaseInsensitive) == 0;
+    if (affineBackground) {
+        QString rawValue;
+        bool reset = false;
+        if (!McpBridgePolicy::filterStringOrResetValue(value, &rawValue, &reset)
+            || !McpBridgePolicy::affineBackgroundParameterWriteAllowed(service,
+                                                                       name,
+                                                                       rawValue,
+                                                                       reset)) {
+            error = QStringLiteral("affine background must be an exact built-in color producer");
+            return false;
+        }
+    }
+    if (!McpBridgePolicy::nestedProducerPathParameterWriteAllowed(service, name, value.isNull())) {
+        error = QStringLiteral("nested affine producer paths can only be reset through MCP");
+        return false;
+    }
+    if (!McpBridgePolicy::dustFactoryParameterWriteAllowed(service, name, value.isNull())) {
+        error = QStringLiteral("the Dust producer factory can only be reset through MCP");
+        return false;
+    }
+    if (McpBridgePolicy::isTransitionProducerFactoryParameter(service, name)) {
+        QString rawValue;
+        bool reset = false;
+        if (!McpBridgePolicy::filterStringOrResetValue(value, &rawValue, &reset)
+            || !McpBridgePolicy::transitionProducerFactoryParameterWriteAllowed(service,
+                                                                                name,
+                                                                                rawValue,
+                                                                                reset)) {
+            error = QStringLiteral("transition producer factory must be empty or exactly 'loader'");
+            return false;
+        }
+    }
+    if (!value.isNull() && !McpBridgePolicy::avFilterPropertyAllowed(service, name)) {
+        error = QStringLiteral("filter parameter '%1' is not an approved option for '%2'")
+                    .arg(name, filterId);
+        return false;
+    }
+    if (!McpBridgePolicy::richTextParameterWriteAllowed(filterId, name, value.isNull())
+        || !McpBridgePolicy::richTextParameterWriteAllowed(service, name, value.isNull())) {
         error = QStringLiteral("filter parameter '%1' for '%2' cannot be written through MCP; "
                                "use plain text and styling, or reset it to null")
                     .arg(name, filterId);
         return false;
     }
 
-    const auto kind = McpBridgePolicy::filterPathKind(filterId, name);
+    if (service.trimmed().compare(QStringLiteral("mask_start"), Qt::CaseInsensitive) == 0
+        && name.trimmed().compare(QStringLiteral("filter"), Qt::CaseInsensitive) == 0) {
+        bool reset = false;
+        QString nestedService;
+        if (!McpBridgePolicy::maskStartSelectorValue(value, &nestedService, &reset)
+            || !McpBridgePolicy::nestedFilterParameterWriteAllowed(service,
+                                                                   name,
+                                                                   nestedService,
+                                                                   reset)) {
+            error = QStringLiteral("mask filter selector must be reset or an exact safe token");
+            return false;
+        }
+    }
+
+    const auto kind = McpBridgePolicy::filterPathKindForIdentities(filterId, service, name);
     if (kind == McpBridgePolicy::FilterPathKind::NotPath) {
         if (normalized && value.isString())
             *normalized = value.toString();
@@ -632,6 +865,12 @@ bool McpBridge::normalizeFilterPathParameter(const QString &filterId,
     }
 
     const bool mustExist = kind == McpBridgePolicy::FilterPathKind::ExistingFile;
+    const bool lutFile = McpBridgePolicy::isLutFileParameter(filterId, name)
+                         || McpBridgePolicy::isLutFileParameter(service, name);
+    if (lutFile && QFileInfo(value.toString()).isSymLink()) {
+        error = QStringLiteral("LUT filter files cannot be symbolic links");
+        return false;
+    }
     QString safePath;
     if (!pathAllowed(value.toString(), mustExist, &safePath)) {
         error = mustExist
@@ -651,11 +890,39 @@ bool McpBridge::normalizeFilterPathParameter(const QString &filterId,
                     .arg(name, filterId);
         return false;
     }
+    if (!McpBridgePolicy::filterInputSuffixAllowed(filterId, name, info.suffix())
+        || !McpBridgePolicy::filterInputSuffixAllowed(service, name, info.suffix())) {
+        error = QStringLiteral("LUT filter files must use a supported LUT extension");
+        return false;
+    }
     if (normalized)
         *normalized = safePath;
     return true;
 }
 
+bool McpBridge::validateProjectResourcePaths(const QString &path, QString &error) const
+{
+    const McpXmlPathValidator validator(
+        [this](const QString &candidate, bool mustExist, QString *normalized) {
+            return pathAllowed(candidate, mustExist, normalized);
+        },
+        [this](const QString &element, const QString &service, const QString &filterId) {
+            return bundledMltServiceAllowed(element, service, filterId);
+        });
+    return validator.validateProject(path, &error);
+}
+
+bool McpBridge::validateMediaResourcePaths(const QString &path, QString &error) const
+{
+    const McpXmlPathValidator validator(
+        [this](const QString &candidate, bool mustExist, QString *normalized) {
+            return pathAllowed(candidate, mustExist, normalized);
+        },
+        [this](const QString &element, const QString &service, const QString &filterId) {
+            return bundledMltServiceAllowed(element, service, filterId);
+        });
+    return validator.validateMedia(path, &error);
+}
 void McpBridge::loadAllowedRoots()
 {
     m_allowedRoots.clear();
@@ -674,6 +941,10 @@ void McpBridge::loadAllowedRoots()
 
 QString McpBridge::normalizedPathForPolicy(const QString &path, bool mustExist) const
 {
+    if (!McpBridgePolicy::cStringValueAllowed(path))
+        return QString();
+    if (QDir::fromNativeSeparators(path).startsWith(QStringLiteral("//")))
+        return QString();
     QFileInfo info(path);
     if (!info.isAbsolute() || (mustExist && !info.exists()))
         return QString();
