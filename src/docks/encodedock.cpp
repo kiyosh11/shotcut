@@ -35,6 +35,7 @@
 #include "util.h"
 
 #include <QFileInfo>
+#include <QPersistentModelIndex>
 #include <QProcess>
 #include <QRegularExpression>
 #include <QRegularExpressionValidator>
@@ -528,35 +529,92 @@ bool EncodeDock::exportToFile(const QString &target,
                               const QString &presetName,
                               QString *errorMessage)
 {
-    auto fail = [errorMessage](const QString &message) {
+    auto setError = [errorMessage](const QString &message) {
         if (errorMessage)
             *errorMessage = message;
         return false;
     };
     if (target.isEmpty())
-        return fail(tr("Export target is empty."));
+        return setError(tr("Export target is empty."));
     if (!MLT.producer())
-        return fail(tr("There is no open producer to export."));
+        return setError(tr("There is no open producer to export."));
 
+    const QFileInfo output(target);
+    if (output.exists() && !output.isFile())
+        return setError(tr("Export target must be a regular file."));
+    if (!QFileInfo(output.absolutePath()).isWritable())
+        return setError(tr("Export directory is not writable."));
+    if (JOBS.targetIsInProgress(target))
+        return setError(tr("An export job already exists for the requested target."));
+
+    QString presetMatch;
     if (!presetName.isEmpty()
         && presetName.compare(QStringLiteral("default"), Qt::CaseInsensitive) != 0) {
         const QString prefix = QStringLiteral("consumer/avformat/");
-        QString match;
         for (int index = 0; m_presets && index < m_presets->count(); ++index) {
             const QString key = QString::fromUtf8(m_presets->get_name(index));
             if (key.compare(presetName, Qt::CaseInsensitive) == 0
                 || (key.startsWith(prefix)
                     && key.mid(prefix.size()).compare(presetName, Qt::CaseInsensitive) == 0)) {
-                match = key;
+                presetMatch = key;
                 break;
             }
         }
-        if (match.isEmpty())
-            return fail(tr("Unknown export preset: %1").arg(presetName));
+        if (presetMatch.isEmpty())
+            return setError(tr("Unknown export preset: %1").arg(presetName));
         Mlt::Properties preset(
-            static_cast<mlt_properties>(m_presets->get_data(match.toUtf8().constData())));
+            static_cast<mlt_properties>(m_presets->get_data(presetMatch.toUtf8().constData())));
         if (!preset.is_valid())
-            return fail(tr("Invalid export preset: %1").arg(presetName));
+            return setError(tr("Invalid export preset: %1").arg(presetName));
+    }
+
+    const QString previousAdvancedOptions = ui->advancedTextEdit->toPlainText();
+    const QPersistentModelIndex previousPresetIndex = ui->presetsTree->currentIndex();
+    const bool previousIsDefaultSettings = m_isDefaultSettings;
+    const QString previousExtension = m_extension;
+    QScopedPointer<Mlt::Properties> previousProperties(collectProperties(0, true));
+    const QString previousFrom = ui->fromCombo->currentData().toString();
+    const int previousFromIndex = ui->fromCombo->currentIndex();
+    const QStringList previousOutputFilenames = m_outputFilenames;
+    const QString previousEncodePath = Settings.encodePath();
+    const bool wasPaused = MLT.isPaused();
+    const double previousSpeed = MLT.producer()->get_speed();
+    bool stateChanged = false;
+    bool playbackPaused = false;
+
+    auto restoreState = [&]() {
+        if (!stateChanged)
+            return;
+        on_resetButton_clicked();
+        if (previousProperties && previousProperties->is_valid())
+            loadPresetFromProperties(*previousProperties);
+        ui->advancedTextEdit->setPlainText(previousAdvancedOptions);
+        ui->presetsTree->setCurrentIndex(previousPresetIndex);
+        m_isDefaultSettings = previousIsDefaultSettings;
+        m_extension = previousExtension;
+        onProducerOpened();
+        int restoreIndex = ui->fromCombo->findData(previousFrom);
+        if (restoreIndex < 0 && previousFromIndex >= 0 && previousFromIndex < ui->fromCombo->count())
+            restoreIndex = previousFromIndex;
+        if (restoreIndex >= 0) {
+            ui->fromCombo->setCurrentIndex(restoreIndex);
+            on_fromCombo_currentIndexChanged(restoreIndex);
+        }
+        m_outputFilenames = previousOutputFilenames;
+        Settings.setEncodePath(previousEncodePath);
+        if (playbackPaused && !wasPaused)
+            MLT.play(qFuzzyIsNull(previousSpeed) ? 1.0 : previousSpeed);
+        stateChanged = false;
+    };
+    auto fail = [&restoreState, &setError](const QString &message) {
+        restoreState();
+        return setError(message);
+    };
+
+    stateChanged = true;
+    if (!presetMatch.isEmpty()) {
+        Mlt::Properties preset(
+            static_cast<mlt_properties>(m_presets->get_data(presetMatch.toUtf8().constData())));
         loadPresetFromProperties(preset);
     } else if (presetName.compare(QStringLiteral("default"), Qt::CaseInsensitive) == 0) {
         on_resetButton_clicked();
@@ -572,25 +630,39 @@ bool EncodeDock::exportToFile(const QString &target,
     auto *producer = fromProducer();
     if (!producer || !MLT.isSeekable(producer))
         return fail(tr("The current timeline is not exportable."));
-    if (checkForMissingFiles())
-        return fail(tr("Export stopped because project files are missing."));
+    QString missingFilesError;
+    if (checkForMissingFiles(false, &missingFilesError)) {
+        return fail(missingFilesError.isEmpty()
+                        ? tr("Export stopped because project files are missing.")
+                        : missingFilesError);
+    }
+    if (hasPendingAnalysis()) {
+        return fail(tr("Export requires filter analysis. Run the pending analysis in Shotcut "
+                       "before starting an MCP export."));
+    }
 
+    const QStringList requestedOutputFilenames{target};
     MLT.pause();
-    QFileInfo output(target);
-    Settings.setEncodePath(output.absolutePath());
-    m_outputFilenames = QStringList(target);
+    playbackPaused = true;
 
     MLT.purgeMemoryPool();
-    const int jobsBefore = JOBS.jobs().size();
     int threadCount = QThread::idealThreadCount();
     if (threadCount > 2 && ui->parallelCheckbox->isChecked())
         threadCount = qMin(threadCount - 1, 4);
     else
         threadCount = 1;
-    enqueueAnalysis();
-    enqueueMelt(m_outputFilenames, Settings.playerGPU() ? -1 : -threadCount);
-    if (JOBS.jobs().size() <= jobsBefore)
-        return fail(tr("Shotcut did not create an export job."));
+    QString enqueueError;
+    const bool queued = enqueueMelt(requestedOutputFilenames,
+                                    Settings.playerGPU() ? -1 : -threadCount,
+                                    false,
+                                    &enqueueError);
+    if (!queued) {
+        return fail(enqueueError.isEmpty()
+                        ? tr("Shotcut did not create an export job for the requested target.")
+                        : enqueueError);
+    }
+    Settings.setEncodePath(output.absolutePath());
+    m_outputFilenames = requestedOutputFilenames;
     return true;
 }
 
@@ -1614,17 +1686,32 @@ MeltJob *EncodeDock::createMeltJob(Mlt::Producer *service,
                                    const QString &target,
                                    int realtime,
                                    int pass,
-                                   const QThread::Priority priority)
+                                   const QThread::Priority priority,
+                                   bool interactive,
+                                   QString *errorMessage)
 {
-    QString caption = tr("Export Video/Audio");
-    if (Util::warnIfNotWritable(target, this, caption))
+    auto fail = [errorMessage](const QString &message) -> MeltJob * {
+        if (errorMessage)
+            *errorMessage = message;
         return nullptr;
+    };
+    QString caption = tr("Export Video/Audio");
+    if (interactive) {
+        if (Util::warnIfNotWritable(target, this, caption))
+            return nullptr;
+    } else {
+        const QFileInfo output(target);
+        if (!QFileInfo(output.absolutePath()).isWritable())
+            return fail(tr("Export directory is not writable."));
+    }
 
     if (JOBS.targetIsInProgress(target)) {
-        QMessageBox::warning(this,
-                             windowTitle(),
-                             QObject::tr("A job already exists for %1").arg(target));
-        return nullptr;
+        if (interactive) {
+            QMessageBox::warning(this,
+                                 windowTitle(),
+                                 QObject::tr("A job already exists for %1").arg(target));
+        }
+        return fail(tr("An export job already exists for the requested target."));
     }
 
     // if image sequence, change filename to include number
@@ -1667,7 +1754,7 @@ MeltJob *EncodeDock::createMeltJob(Mlt::Producer *service,
     if (!tmp->open()) {
         LOG_ERROR() << "Failed to create temporary file" << tmp->fileName();
         delete tmp;
-        return nullptr;
+        return fail(tr("Shotcut could not create the temporary export project."));
     }
     QString fileName = tmp->fileName();
     auto isProxy = ui->previewScaleCheckBox->isChecked() && Settings.proxyEnabled();
@@ -1678,7 +1765,7 @@ MeltJob *EncodeDock::createMeltJob(Mlt::Producer *service,
     QFile f1(fileName);
     if (!f1.open(QIODevice::ReadOnly)) {
         LOG_ERROR() << "Failed to open XML file for reading" << fileName;
-        return nullptr;
+        return fail(tr("Shotcut could not read the temporary export project."));
     }
     QXmlStreamReader xmlReader(&f1);
     QDomDocument dom(fileName);
@@ -1688,11 +1775,13 @@ MeltJob *EncodeDock::createMeltJob(Mlt::Producer *service,
     // Check if the target file is a member of the project.
     QString xml = dom.toString(0);
     if (xml.contains(QDir::fromNativeSeparators(target))) {
-        QMessageBox::warning(this,
-                             caption,
-                             tr("You cannot write to a file that is in your project.\n"
-                                "Try again with a different folder or file name."));
-        return nullptr;
+        if (interactive) {
+            QMessageBox::warning(this,
+                                 caption,
+                                 tr("You cannot write to a file that is in your project.\n"
+                                    "Try again with a different folder or file name."));
+        }
+        return fail(tr("The export target is used by the project. Choose a different file."));
     }
 
     // Add autoclose to playlists.
@@ -1776,6 +1865,18 @@ void EncodeDock::runMelt(const QString &target, int realtime)
     }
 }
 
+bool EncodeDock::hasPendingAnalysis() const
+{
+    Mlt::Producer *producer = fromProducer(true);
+    if (!producer || !producer->is_valid())
+        return false;
+
+    FindAnalysisFilterParser parser;
+    parser.prepareJobs(false);
+    parser.start(*producer);
+    return !parser.filters().isEmpty();
+}
+
 void EncodeDock::enqueueAnalysis()
 {
     Mlt::Producer *producer = fromProducer(true);
@@ -1808,54 +1909,84 @@ void EncodeDock::enqueueAnalysis()
     }
 }
 
-void EncodeDock::enqueueMelt(const QStringList &targets, int realtime)
+bool EncodeDock::enqueueMelt(const QStringList &targets,
+                             int realtime,
+                             bool interactive,
+                             QString *errorMessage)
 {
     Mlt::Producer *service = fromProducer(true);
-    int pass = (ui->videoRateControlCombo->currentIndex() != RateControlQuality
-                && !ui->videoCodecCombo->currentText().contains("nvenc")
-                && !ui->videoCodecCombo->currentText().endsWith("_amf")
-                && !ui->videoCodecCombo->currentText().endsWith("_mf")
-                && !ui->videoCodecCombo->currentText().endsWith("_qsv")
-                && !ui->videoCodecCombo->currentText().endsWith("_videotoolbox")
-                && !ui->videoCodecCombo->currentText().endsWith("_vaapi")
-                && ui->dualPassCheckbox->isEnabled() && ui->dualPassCheckbox->isChecked())
-                   ? 1
-                   : 0;
-    if (!service) {
-        // For each playlist item.
-        auto playlist = MAIN.binPlaylist();
-        if (playlist && playlist->is_valid() && playlist->count() > 0) {
-            int n = playlist->count();
-            for (int i = 0; i < n; i++) {
-                QScopedPointer<Mlt::ClipInfo> info(playlist->clip_info(i));
-                if (!info)
-                    continue;
-                QString xml = MLT.XML(info->producer);
-                QScopedPointer<Mlt::Producer> producer(
-                    new Mlt::Producer(MLT.profile(), "xml-string", xml.toUtf8().constData()));
-                producer->set_in_and_out(info->frame_in, info->frame_out);
-                MeltJob *job = createMeltJob(producer.data(), targets[i], realtime, pass);
-                if (job) {
-                    JOBS.add(job);
-                    if (pass) {
-                        job = createMeltJob(producer.data(), targets[i], realtime, 2);
-                        if (job)
-                            JOBS.add(job);
-                    }
-                }
+    const int pass = (ui->videoRateControlCombo->currentIndex() != RateControlQuality
+                      && !ui->videoCodecCombo->currentText().contains("nvenc")
+                      && !ui->videoCodecCombo->currentText().endsWith("_amf")
+                      && !ui->videoCodecCombo->currentText().endsWith("_mf")
+                      && !ui->videoCodecCombo->currentText().endsWith("_qsv")
+                      && !ui->videoCodecCombo->currentText().endsWith("_videotoolbox")
+                      && !ui->videoCodecCombo->currentText().endsWith("_vaapi")
+                      && ui->dualPassCheckbox->isEnabled() && ui->dualPassCheckbox->isChecked())
+                         ? 1
+                         : 0;
+    auto enqueueForTarget = [this, pass, interactive, errorMessage](Mlt::Producer *producer,
+                                                                    const QString &target,
+                                                                    int realtime) {
+        MeltJob *first = createMeltJob(producer,
+                                       target,
+                                       realtime,
+                                       pass,
+                                       Settings.jobPriority(),
+                                       interactive,
+                                       errorMessage);
+        if (!first)
+            return false;
+
+        MeltJob *second = nullptr;
+        if (pass) {
+            second = createMeltJob(producer,
+                                   target,
+                                   realtime,
+                                   2,
+                                   Settings.jobPriority(),
+                                   interactive,
+                                   errorMessage);
+            if (!second) {
+                delete first;
+                return false;
             }
         }
-    } else {
-        MeltJob *job = createMeltJob(service, targets[0], realtime, pass);
-        if (job) {
-            JOBS.add(job);
-            if (pass) {
-                job = createMeltJob(service, targets[0], realtime, 2);
-                if (job)
-                    JOBS.add(job);
-            }
-        }
+        JOBS.add(first);
+        if (second)
+            JOBS.add(second);
+        return true;
+    };
+
+    if (service) {
+        return !targets.isEmpty() && enqueueForTarget(service, targets.constFirst(), realtime);
     }
+
+    bool queuedAny = false;
+    bool allQueued = true;
+    auto playlist = MAIN.binPlaylist();
+    if (playlist && playlist->is_valid() && playlist->count() > 0) {
+        const int count = qMin(playlist->count(), static_cast<int>(targets.size()));
+        for (int i = 0; i < count; ++i) {
+            QScopedPointer<Mlt::ClipInfo> info(playlist->clip_info(i));
+            if (!info) {
+                allQueued = false;
+                continue;
+            }
+            const QString xml = MLT.XML(info->producer);
+            QScopedPointer<Mlt::Producer> producer(
+                new Mlt::Producer(MLT.profile(), "xml-string", xml.toUtf8().constData()));
+            producer->set_in_and_out(info->frame_in, info->frame_out);
+            const bool queued = enqueueForTarget(producer.data(), targets[i], realtime);
+            queuedAny = queuedAny || queued;
+            allQueued = allQueued && queued;
+        }
+        allQueued = allQueued && count == playlist->count()
+                    && count == static_cast<int>(targets.size());
+    }
+    if (!queuedAny && errorMessage && errorMessage->isEmpty())
+        *errorMessage = tr("Shotcut did not create an export job.");
+    return queuedAny && allQueued;
 }
 
 void EncodeDock::encode(const QString &target)
@@ -3122,7 +3253,7 @@ void EncodeDock::initSpecialCodecLists()
     m_losslessAudioCodecs << "tta";
 }
 
-bool EncodeDock::checkForMissingFiles()
+bool EncodeDock::checkForMissingFiles(bool interactive, QString *errorMessage)
 {
     Mlt::Producer *service = fromProducer();
     if (!service) {
@@ -3130,6 +3261,8 @@ bool EncodeDock::checkForMissingFiles()
     }
     if (!service) {
         LOG_ERROR() << "Encode: No service to encode";
+        if (errorMessage)
+            *errorMessage = tr("There is no timeline service to inspect for missing files.");
         return true;
     }
     QScopedPointer<QTemporaryFile> tmp;
@@ -3144,6 +3277,13 @@ bool EncodeDock::checkForMissingFiles()
     }
     if (!tmp->open()) {
         LOG_ERROR() << "Encode: Unable to create temporary file for checking missing files";
+        if (!interactive) {
+            if (errorMessage) {
+                *errorMessage = tr(
+                    "Shotcut could not create a temporary file to verify project media.");
+            }
+            return true;
+        }
         return false;
     }
     QString fileName = tmp->fileName();
@@ -3153,7 +3293,16 @@ bool EncodeDock::checkForMissingFiles()
     MltXmlChecker checker;
     if (checker.check(fileName) != QXmlStreamReader::NoError) {
         LOG_ERROR() << "Encode: Unable to check XML - skipping check";
+        if (!interactive) {
+            if (errorMessage)
+                *errorMessage = tr("Shotcut could not verify the project for missing media.");
+            return true;
+        }
     } else if (checker.unlinkedFilesModel().rowCount() > 0) {
+        if (errorMessage)
+            *errorMessage = tr("Export stopped because project files are missing.");
+        if (!interactive)
+            return true;
         QMessageBox dialog(QMessageBox::Critical,
                            qApp->applicationName(),
                            tr("Your project is missing some files.\n\n"

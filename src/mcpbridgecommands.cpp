@@ -9,11 +9,17 @@
 
 #include "mcpbridge.h"
 
+#include "mcpundoutils.h"
+
 #include "docks/encodedock.h"
 #include "docks/timelinedock.h"
 #include "jobqueue.h"
 #include "mainwindow.h"
+#include "models/attachedfiltersmodel.h"
+#include "models/multitrackmodel.h"
+#include "qmltypes/qmlmetadata.h"
 
+#include <MltProducer.h>
 #include <QFileInfo>
 #include <QJsonArray>
 #include <QUndoStack>
@@ -119,12 +125,17 @@ McpBridge::RpcResult McpBridge::openProject(const QJsonObject &params)
 
     if (discard)
         m_window.setWindowModified(false);
-    m_window.open(normalized, nullptr, false);
+    QString openError;
+    const bool openCallSucceeded
+        = m_window.openProjectNonInteractive(normalized, nullptr, false, true, &openError);
     const QString opened = normalizedPathForPolicy(m_window.fileName(), true);
-    if (opened.compare(normalized, pathCaseSensitivity()) != 0) {
+    if (!openCallSucceeded || opened.compare(normalized, pathCaseSensitivity()) != 0) {
         if (wasModified)
             m_window.setWindowModified(true);
-        return RpcResult::failure(-32003, QStringLiteral("Shotcut did not open that project"));
+        return RpcResult::failure(-32003,
+                                  openError.isEmpty()
+                                      ? QStringLiteral("Shotcut did not open that project")
+                                      : openError);
     }
     return RpcResult::success(editorStatus());
 }
@@ -148,6 +159,10 @@ McpBridge::RpcResult McpBridge::saveProject(const QJsonObject &params)
     if (!pathAllowed(path, false, &normalized))
         return RpcResult::failure(-32004, QStringLiteral("Save path is outside allowed roots"));
 
+    const QFileInfo saveTarget(normalized);
+    if (!QFileInfo(saveTarget.absolutePath()).isWritable())
+        return RpcResult::failure(-32003, QStringLiteral("Save directory is not writable"));
+
     const QString currentPath = normalizedPathForPolicy(m_window.fileName(), true);
     const bool differentPath = normalized.compare(currentPath, pathCaseSensitivity()) != 0;
     const bool overwrite = params.value(QStringLiteral("overwrite")).toBool(false);
@@ -155,7 +170,7 @@ McpBridge::RpcResult McpBridge::saveProject(const QJsonObject &params)
         return RpcResult::failure(-32002, QStringLiteral("Save target exists; overwrite is false"));
 
     const bool relativePaths = params.value(QStringLiteral("relative_paths")).toBool(true);
-    if (!m_window.saveProjectAs(normalized, relativePaths))
+    if (!m_window.saveProjectAsNonInteractive(normalized, relativePaths))
         return RpcResult::failure(-32003, QStringLiteral("Shotcut failed to save the project"));
     return RpcResult::success(editorStatus());
 }
@@ -194,6 +209,12 @@ McpBridge::RpcResult McpBridge::applyEditPlan(const QJsonObject &params)
                         .arg(error));
             }
         }
+        if (m_window.undoStack()->canRedo()) {
+            return RpcResult::failure(
+                -32002,
+                QStringLiteral(
+                    "Apply or discard the existing redo history before submitting an edit plan"));
+        }
         return RpcResult::success(QJsonObject{
             {QStringLiteral("valid"), true},
             {QStringLiteral("dry_run"), true},
@@ -202,27 +223,54 @@ McpBridge::RpcResult McpBridge::applyEditPlan(const QJsonObject &params)
         });
     }
 
+    for (int index = 0; index < operations.size(); ++index) {
+        QString error;
+        if (!validateOperation(operations.at(index).toObject(), error)) {
+            return RpcResult::failure(
+                -32602,
+                QStringLiteral(
+                    "Operation %1 is invalid against the current snapshot: %2. "
+                    "After structural edits, apply and re-read the snapshot before addressing "
+                    "new tracks or clips by index.")
+                    .arg(index)
+                    .arg(error));
+        }
+    }
+
     auto *stack = m_window.undoStack();
-    const int beforeRevision = stack->index();
+    if (stack->canRedo()) {
+        return RpcResult::failure(
+            -32002,
+            QStringLiteral(
+                "Apply or discard the existing redo history before submitting an edit plan"));
+    }
+
+    const auto undoState = McpUndo::capture(*stack);
     stack->beginMacro(label);
     int applied = 0;
     QString applyError;
     for (const auto &value : operations) {
-        if (!validateOperation(value.toObject(), applyError)
-            || !applyOperation(value.toObject(), applyError))
+        if (!applyOperation(value.toObject(), applyError))
             break;
         ++applied;
     }
     stack->endMacro();
 
     if (applied != operations.size()) {
-        if (stack->index() != beforeRevision && stack->canUndo())
-            stack->undo();
-        const QString message = QStringLiteral("Edit plan rolled back at operation %1: %2")
-                                    .arg(applied)
-                                    .arg(applyError);
-        QJsonObject data;
-        data.insert(QStringLiteral("revision"), static_cast<double>(m_revision));
+        const bool historyRestored = McpUndo::rollbackLatestMacro(*stack, undoState);
+        const QString message = historyRestored
+                                    ? QStringLiteral("Edit plan rolled back at operation %1: %2")
+                                          .arg(applied)
+                                          .arg(applyError)
+                                    : QStringLiteral("Edit plan failed at operation %1 and the "
+                                                     "undo stack could not be restored: "
+                                                     "%2")
+                                          .arg(applied)
+                                          .arg(applyError);
+        QJsonObject data{
+            {QStringLiteral("revision"), static_cast<double>(m_revision)},
+            {QStringLiteral("history_restored"), historyRestored},
+        };
         return RpcResult::failure(-32003, message, data);
     }
 
@@ -267,9 +315,12 @@ McpBridge::RpcResult McpBridge::startExport(const QJsonObject &params)
     QString normalized;
     if (!pathAllowed(requiredString(params, QStringLiteral("target")), false, &normalized))
         return RpcResult::failure(-32004, QStringLiteral("Export target is outside allowed roots"));
-    if (QFileInfo::exists(normalized) && !params.value(QStringLiteral("overwrite")).toBool(false))
+    const QFileInfo output(normalized);
+    if (output.exists() && !output.isFile())
+        return RpcResult::failure(-32002, QStringLiteral("Export target must be a regular file"));
+    if (output.exists() && !params.value(QStringLiteral("overwrite")).toBool(false))
         return RpcResult::failure(-32002, QStringLiteral("Export target exists; set overwrite"));
-    if (JOBS.targetIsInProgress(normalized))
+    if (exportTargetInProgress(normalized))
         return RpcResult::failure(-32002, QStringLiteral("An export to this target is active"));
 
     QString error;
@@ -332,9 +383,28 @@ bool McpBridge::validateOperation(const QJsonObject &operation, QString &error) 
         }
         if (operation.contains(QStringLiteral("index"))) {
             int index;
-            if (!jsonInteger(operation, QStringLiteral("index"), &index) || index < 0
-                || index > m_window.timelineDock()->model()->trackList().size()) {
-                error = QStringLiteral("index is outside the track insertion range");
+            if (!jsonInteger(operation, QStringLiteral("index"), &index)) {
+                error = QStringLiteral("index must be an integer");
+                return false;
+            }
+
+            const auto &tracks = m_window.timelineDock()->model()->trackList();
+            int firstAudioTrack = tracks.size();
+            for (int trackIndex = 0; trackIndex < tracks.size(); ++trackIndex) {
+                if (tracks.at(trackIndex).type == AudioTrackType) {
+                    firstAudioTrack = trackIndex;
+                    break;
+                }
+            }
+            const int minimum = kind == QStringLiteral("video")
+                                    ? 0
+                                    : (tracks.isEmpty() ? 0 : qMax(firstAudioTrack, 1));
+            const int maximum = kind == QStringLiteral("video") ? firstAudioTrack : tracks.size();
+            if (index < minimum || index > maximum) {
+                error = QStringLiteral("%1 tracks can only be inserted at indexes %2 through %3")
+                            .arg(kind)
+                            .arg(minimum)
+                            .arg(maximum);
                 return false;
             }
         }
@@ -485,10 +555,30 @@ bool McpBridge::validateOperation(const QJsonObject &operation, QString &error) 
             error = QStringLiteral("trim edge or delta_frames is invalid");
             return false;
         }
-    } else if (type == QStringLiteral("split_clip") || type == QStringLiteral("add_transition")) {
+    } else if (type == QStringLiteral("split_clip")) {
         int position;
         if (!jsonInteger(operation, QStringLiteral("position"), &position) || position < 0) {
             error = QStringLiteral("position must be a non-negative frame");
+            return false;
+        }
+    } else if (type == QStringLiteral("add_transition")) {
+        int position;
+        if (!jsonInteger(operation, QStringLiteral("position"), &position) || position < 0) {
+            error = QStringLiteral("position must be a non-negative frame");
+            return false;
+        }
+        if (operation.contains(QStringLiteral("ripple"))
+            && !operation.value(QStringLiteral("ripple")).isBool()) {
+            error = QStringLiteral("ripple must be boolean");
+            return false;
+        }
+        const bool ripple = operation.value(QStringLiteral("ripple")).toBool();
+        if (!m_window.timelineDock()->model()->addTransitionValid(track,
+                                                                  track,
+                                                                  clip,
+                                                                  position,
+                                                                  ripple)) {
+            error = QStringLiteral("transition position is not valid for this clip");
             return false;
         }
     } else if (type == QStringLiteral("set_clip_fade")) {
@@ -509,12 +599,21 @@ bool McpBridge::validateOperation(const QJsonObject &operation, QString &error) 
         }
     } else if (type == QStringLiteral("add_filter")
                || type == QStringLiteral("set_filter_parameters")) {
+        QString filterId;
         if (type == QStringLiteral("add_filter")) {
-            const QString filterId = requiredString(operation, QStringLiteral("filter_id"));
+            filterId = requiredString(operation, QStringLiteral("filter_id"));
             if (filterId.isEmpty() || filterId.size() > 512) {
                 error = QStringLiteral("filter_id must be 1 to 512 characters");
                 return false;
             }
+            auto *metadata = editableClipFilterMetadata(filterId);
+            if (!metadata) {
+                error = QStringLiteral("filter_id is unknown or not editable on clips");
+                return false;
+            }
+            Mlt::Producer producer = m_window.timelineDock()->producerForClip(track, clip);
+            if (!validateClipFilterAddition(metadata, producer, error))
+                return false;
         }
         if (type == QStringLiteral("set_filter_parameters")) {
             int filterIndex;
@@ -523,6 +622,19 @@ bool McpBridge::validateOperation(const QJsonObject &operation, QString &error) 
                 error = QStringLiteral("filter_index is invalid");
                 return false;
             }
+            Mlt::Producer producer = m_window.timelineDock()->producerForClip(track, clip);
+            AttachedFiltersModel attachedFilters;
+            attachedFilters.setProducer(&producer);
+            if (filterIndex >= attachedFilters.rowCount()) {
+                error = QStringLiteral("filter_index does not exist");
+                return false;
+            }
+            const auto *metadata = attachedFilters.getMetadata(filterIndex);
+            if (!metadata || metadata->uniqueId().isEmpty()) {
+                error = QStringLiteral("filter_index does not identify an editable filter");
+                return false;
+            }
+            filterId = metadata->uniqueId();
         }
 
         const auto parametersValue = operation.value(QStringLiteral("parameters"));
@@ -551,20 +663,12 @@ bool McpBridge::validateOperation(const QJsonObject &operation, QString &error) 
                 error = QStringLiteral("filter parameter '%1' exceeds numeric limit").arg(name);
                 return false;
             }
-            if (value.isString()) {
-                const QString stringValue = value.toString();
-                if (stringValue.size() > 1024 * 1024) {
-                    error = QStringLiteral("filter parameter '%1' is too large").arg(name);
-                    return false;
-                }
-                QFileInfo possiblePath(stringValue);
-                if (possiblePath.isAbsolute() && !pathAllowed(stringValue, true)) {
-                    error = QStringLiteral(
-                                "filter parameter '%1' references a path outside allowed roots")
-                                .arg(name);
-                    return false;
-                }
+            if (value.isString() && value.toString().size() > 1024 * 1024) {
+                error = QStringLiteral("filter parameter '%1' is too large").arg(name);
+                return false;
             }
+            if (!normalizeFilterPathParameter(filterId, name, value, nullptr, error))
+                return false;
         }
     }
     return true;

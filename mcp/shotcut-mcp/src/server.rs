@@ -1,13 +1,7 @@
 use rmcp::{
-    ErrorData as McpError, RoleServer, ServerHandler,
-    handler::server::{
-        router::{prompt::PromptRouter, tool::ToolRouter},
-        wrapper::Parameters,
-    },
-    model::*,
-    prompt, prompt_handler, prompt_router,
-    service::RequestContext,
-    tool, tool_handler, tool_router,
+    ErrorData as McpError, RoleServer, ServerHandler, handler::server::wrapper::Parameters,
+    model::*, prompt, prompt_handler, prompt_router, service::RequestContext, tool, tool_handler,
+    tool_router,
 };
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -29,16 +23,12 @@ indexes or paths; use snapshot data. Export only when the user explicitly reques
 #[derive(Clone)]
 pub struct ShotcutServer {
     bridge: BridgeClient,
-    tool_router: ToolRouter<ShotcutServer>,
-    prompt_router: PromptRouter<ShotcutServer>,
 }
 
 impl ShotcutServer {
     pub fn from_env() -> Result<Self, BridgeError> {
         Ok(Self {
             bridge: BridgeClient::from_env()?,
-            tool_router: Self::tool_router(),
-            prompt_router: Self::prompt_router(),
         })
     }
 
@@ -279,7 +269,7 @@ impl ServerHandler for ShotcutServer {
         &self,
         request: ReadResourceRequestParams,
         _context: RequestContext<RoleServer>,
-    ) -> Result<ReadResourceResponse, McpError> {
+    ) -> Result<ReadResourceResult, McpError> {
         let method = match request.uri.as_str() {
             "shotcut://editor/status" => "editor.status",
             "shotcut://project/snapshot" => "project.snapshot",
@@ -299,8 +289,7 @@ impl ServerHandler for ShotcutServer {
         Ok(ReadResourceResult::new(vec![ResourceContents::text(
             format_json(&value),
             request.uri,
-        )])
-        .into())
+        )]))
     }
 }
 
@@ -310,4 +299,37 @@ fn bridge_to_mcp_error(error: BridgeError) -> McpError {
 
 fn format_json(value: &Value) -> String {
     serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const TOOL_NAMES: [&str; 9] = [
+        "editor_status",
+        "project_snapshot",
+        "open_project",
+        "save_project",
+        "apply_edit_plan",
+        "undo",
+        "redo",
+        "export_video",
+        "export_status",
+    ];
+
+    #[test]
+    fn tool_router_registers_every_editor_tool() {
+        let router = ShotcutServer::tool_router();
+        assert_eq!(router.list_all().len(), TOOL_NAMES.len());
+        for name in TOOL_NAMES {
+            assert!(router.get(name).is_some(), "missing MCP tool {name}");
+        }
+    }
+
+    #[test]
+    fn prompt_router_registers_full_video_workflow() {
+        let router = ShotcutServer::prompt_router();
+        assert_eq!(router.list_all().len(), 1);
+        assert!(router.has_route("edit_full_video"));
+    }
 }

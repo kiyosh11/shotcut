@@ -18,8 +18,15 @@
 #include <QObject>
 #include <QStringList>
 
+#include <memory>
+
+namespace Mlt {
+class Producer;
+}
 class MainWindow;
 class QLocalSocket;
+class QLockFile;
+class QmlMetadata;
 
 class McpBridge : public QObject
 {
@@ -54,6 +61,7 @@ private:
     QJsonObject editorStatus() const;
     QJsonObject projectSnapshot() const;
     QJsonArray exportJobs(const QString &target = QString()) const;
+    bool exportTargetInProgress(const QString &target) const;
 
     RpcResult openProject(const QJsonObject &params);
     RpcResult saveProject(const QJsonObject &params);
@@ -72,6 +80,15 @@ private:
     bool checkRevision(const QJsonObject &params, QString &error) const;
     bool trackExists(int track) const;
     bool clipExists(int track, int clip) const;
+    QmlMetadata *editableClipFilterMetadata(const QString &filterId) const;
+    bool validateClipFilterAddition(QmlMetadata *metadata,
+                                    Mlt::Producer &producer,
+                                    QString &error) const;
+    bool normalizeFilterPathParameter(const QString &filterId,
+                                      const QString &name,
+                                      const QJsonValue &value,
+                                      QString *normalized,
+                                      QString &error) const;
     bool pathAllowed(const QString &path, bool mustExist, QString *normalized = nullptr) const;
     QString normalizedPathForPolicy(const QString &path, bool mustExist) const;
     void loadAllowedRoots();
@@ -79,12 +96,14 @@ private:
 
     MainWindow &m_window;
     QLocalServer m_server;
+    std::unique_ptr<QLockFile> m_endpointLock;
     QHash<QLocalSocket *, QByteArray> m_buffers;
     QByteArray m_token;
     QString m_endpoint;
     QStringList m_allowedRoots;
     qint64 m_revision{1};
     bool m_busy{false};
+    bool m_ownsEndpoint{false};
 };
 
 #endif // MCPBRIDGE_H

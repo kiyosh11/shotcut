@@ -9,13 +9,17 @@
 
 #include "mcpbridge.h"
 
+#include "mcpbridgepolicy.h"
+
 #include "Logger.h"
 #include "controllers/filtercontroller.h"
 #include "docks/encodedock.h"
 #include "docks/timelinedock.h"
 #include "jobqueue.h"
+#include "localpath.h"
 #include "mainwindow.h"
 #include "mltcontroller.h"
+#include "models/attachedfiltersmodel.h"
 #include "models/metadatamodel.h"
 #include "models/multitrackmodel.h"
 #include "models/subtitlesmodel.h"
@@ -24,11 +28,13 @@
 
 #include <MltFilter.h>
 #include <MltProducer.h>
+#include <QCryptographicHash>
 #include <QDir>
 #include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QLocalSocket>
+#include <QLockFile>
 #include <QScopedPointer>
 #include <QScopedValueRollback>
 #include <QUndoStack>
@@ -107,8 +113,12 @@ void McpBridge::advanceRevision()
 McpBridge::~McpBridge()
 {
     m_server.close();
-    if (!m_endpoint.isEmpty())
+    if (m_ownsEndpoint) {
         QLocalServer::removeServer(m_endpoint);
+        m_ownsEndpoint = false;
+    }
+    if (m_endpointLock && m_endpointLock->isLocked())
+        m_endpointLock->unlock();
 }
 
 bool McpBridge::startFromEnvironment()
@@ -132,12 +142,38 @@ bool McpBridge::startFromEnvironment()
     }
 
     loadAllowedRoots();
+
+    const QByteArray endpointHash
+        = QCryptographicHash::hash(m_endpoint.toUtf8(), QCryptographicHash::Sha256).toHex().left(24);
+    const QString lockPath = QDir::temp().filePath(
+        QStringLiteral("shotcut-mcp-%1.lock").arg(QString::fromLatin1(endpointHash)));
+    m_endpointLock.reset(new QLockFile(lockPath));
+    m_endpointLock->setStaleLockTime(0);
+    if (!m_endpointLock->tryLock(0)) {
+        LOG_WARNING() << "MCP bridge endpoint is already owned by another Shotcut instance";
+        m_endpointLock.reset();
+        return false;
+    }
+
+    QLocalSocket probe;
+    probe.connectToServer(m_endpoint, QIODevice::ReadWrite);
+    if (probe.waitForConnected(100)) {
+        probe.abort();
+        LOG_WARNING() << "MCP bridge endpoint is already served by another process";
+        m_endpointLock->unlock();
+        m_endpointLock.reset();
+        return false;
+    }
+
     QLocalServer::removeServer(m_endpoint);
     m_server.setSocketOptions(QLocalServer::UserAccessOption);
     if (!m_server.listen(m_endpoint)) {
         LOG_WARNING() << "MCP bridge failed to listen:" << m_server.errorString();
+        m_endpointLock->unlock();
+        m_endpointLock.reset();
         return false;
     }
+    m_ownsEndpoint = true;
     LOG_INFO() << "MCP bridge listening on a same-user local socket";
     return true;
 }
@@ -298,23 +334,23 @@ QJsonObject McpBridge::editorStatus() const
             || metadata->isOutputOnly()) {
             continue;
         }
-        const auto type = metadata->type();
-        if (type != QmlMetadata::Filter && type != QmlMetadata::Link
-            && type != QmlMetadata::FilterSet) {
+        const auto metadataType = metadata->type();
+        if (metadataType != QmlMetadata::Filter && metadataType != QmlMetadata::Link
+            && metadataType != QmlMetadata::FilterSet) {
             continue;
         }
         const QString id = metadata->uniqueId();
         if (id.isEmpty())
             continue;
-        QString type = QStringLiteral("filter");
-        if (metadata->type() == QmlMetadata::Link)
-            type = QStringLiteral("link");
-        else if (metadata->type() == QmlMetadata::FilterSet)
-            type = QStringLiteral("filter_set");
+        QString catalogType = QStringLiteral("filter");
+        if (metadataType == QmlMetadata::Link)
+            catalogType = QStringLiteral("link");
+        else if (metadataType == QmlMetadata::FilterSet)
+            catalogType = QStringLiteral("filter_set");
         filterCatalog.append(QJsonObject{
             {QStringLiteral("id"), id},
             {QStringLiteral("name"), metadata->name()},
-            {QStringLiteral("type"), type},
+            {QStringLiteral("type"), catalogType},
             {QStringLiteral("audio"), metadata->isAudio()},
             {QStringLiteral("clip_only"), metadata->isClipOnly()},
             {QStringLiteral("allow_multiple"), metadata->allowMultiple()},
@@ -378,29 +414,36 @@ QJsonObject McpBridge::projectSnapshot() const
             QJsonArray filters;
             Mlt::Producer producer = timeline->producerForClip(trackIndex, clipIndex);
             if (producer.is_valid() && !producer.is_blank()) {
-                for (int filterIndex = 0; filterIndex < producer.filter_count(); ++filterIndex) {
-                    QScopedPointer<Mlt::Filter> filter(producer.filter(filterIndex));
-                    if (!filter || !filter->is_valid() || filter->get_int(kShotcutHiddenProperty))
+                AttachedFiltersModel attachedFilters;
+                attachedFilters.setProducer(&producer);
+                for (int filterIndex = 0; filterIndex < attachedFilters.rowCount(); ++filterIndex) {
+                    QScopedPointer<Mlt::Service> service(attachedFilters.getService(filterIndex));
+                    if (!service || !service->is_valid())
                         continue;
-                    QString id = QString::fromUtf8(filter->get(kShotcutFilterProperty));
+                    const auto *metadata = attachedFilters.getMetadata(filterIndex);
+                    QString id = metadata ? metadata->uniqueId() : QString();
                     if (id.isEmpty())
-                        id = QString::fromUtf8(filter->get("mlt_service"));
+                        id = QString::fromUtf8(service->get("mlt_service"));
+                    const QString serviceType = metadata && metadata->type() == QmlMetadata::Link
+                                                    ? QStringLiteral("link")
+                                                    : QStringLiteral("filter");
                     QJsonObject parameters;
-                    for (int propertyIndex = 0; propertyIndex < filter->count(); ++propertyIndex) {
-                        const QString name = QString::fromUtf8(filter->get_name(propertyIndex));
+                    for (int propertyIndex = 0; propertyIndex < service->count(); ++propertyIndex) {
+                        const QString name = QString::fromUtf8(service->get_name(propertyIndex));
                         if (name.startsWith(QLatin1Char('_'))
                             || name == QStringLiteral("mlt_service"))
                             continue;
                         if (name.startsWith(QStringLiteral("shotcut:")))
                             continue;
-                        const QString value = QString::fromUtf8(filter->get(propertyIndex));
+                        const QString value = QString::fromUtf8(service->get(propertyIndex));
                         if (value.size() <= 4096)
                             parameters.insert(name, value);
                     }
                     filters.append(QJsonObject{
                         {QStringLiteral("index"), filterIndex},
                         {QStringLiteral("id"), id},
-                        {QStringLiteral("disabled"), filter->get_int("disable") != 0},
+                        {QStringLiteral("type"), serviceType},
+                        {QStringLiteral("disabled"), service->get_int("disable") != 0},
                         {QStringLiteral("parameters"), parameters},
                     });
                 }
@@ -487,7 +530,7 @@ QJsonArray McpBridge::exportJobs(const QString &target) const
             continue;
         if (!requestedTarget.isEmpty()) {
             const QString jobTarget = QFileInfo(job->target()).absoluteFilePath();
-            if (jobTarget != requestedTarget)
+            if (!LocalPath::equal(jobTarget, requestedTarget))
                 continue;
         }
         result.append(QJsonObject{
@@ -497,6 +540,120 @@ QJsonArray McpBridge::exportJobs(const QString &target) const
         });
     }
     return result;
+}
+
+bool McpBridge::exportTargetInProgress(const QString &target) const
+{
+    return JOBS.targetIsInProgress(target);
+}
+
+QmlMetadata *McpBridge::editableClipFilterMetadata(const QString &filterId) const
+{
+    auto *metadata = m_window.filterController()->metadata(filterId);
+    if (!metadata)
+        return nullptr;
+    const auto type = metadata->type();
+    const bool supportedType = type == QmlMetadata::Filter || type == QmlMetadata::Link
+                               || type == QmlMetadata::FilterSet;
+    if (!supportedType || metadata->uniqueId().isEmpty() || metadata->isHidden()
+        || metadata->isDeprecated() || metadata->isTrackOnly() || metadata->isOutputOnly()) {
+        return nullptr;
+    }
+    return metadata;
+}
+
+bool McpBridge::validateClipFilterAddition(QmlMetadata *metadata,
+                                           Mlt::Producer &producer,
+                                           QString &error) const
+{
+    if (!metadata || !producer.is_valid()) {
+        error = QStringLiteral("clip filter or target producer is unavailable");
+        return false;
+    }
+
+    AttachedFiltersModel attachedFilters;
+    attachedFilters.setProducer(&producer);
+    if (!metadata->allowMultiple()) {
+        for (int row = 0; row < attachedFilters.rowCount(); ++row) {
+            const auto *attachedMetadata = attachedFilters.getMetadata(row);
+            if (attachedMetadata && attachedMetadata->uniqueId() == metadata->uniqueId()) {
+                error = QStringLiteral("filter is already attached and does not allow multiple "
+                                       "instances");
+                return false;
+            }
+        }
+    }
+
+    if (metadata->type() == QmlMetadata::Link) {
+        if (producer.type() != mlt_service_chain_type) {
+            error = QStringLiteral("link filter requires a chain clip");
+            return false;
+        }
+        if (metadata->seekReverse() && producer.get_int("meta.media.has_b_frames") != 0) {
+            error = QStringLiteral("filter requires reverse seeking, but this clip contains "
+                                   "B-frames; convert it manually before using MCP");
+            return false;
+        }
+    }
+    return true;
+}
+
+bool McpBridge::normalizeFilterPathParameter(const QString &filterId,
+                                             const QString &name,
+                                             const QJsonValue &value,
+                                             QString *normalized,
+                                             QString &error) const
+{
+    if (!McpBridgePolicy::richTextParameterWriteAllowed(filterId, name, value.isNull())) {
+        error = QStringLiteral("filter parameter '%1' for '%2' cannot be written through MCP; "
+                               "use plain text and styling, or reset it to null")
+                    .arg(name, filterId);
+        return false;
+    }
+
+    const auto kind = McpBridgePolicy::filterPathKind(filterId, name);
+    if (kind == McpBridgePolicy::FilterPathKind::NotPath) {
+        if (normalized && value.isString())
+            *normalized = value.toString();
+        return true;
+    }
+    if (value.isNull())
+        return true;
+    if (!value.isString() || value.toString().isEmpty()) {
+        error = QStringLiteral("filter parameter '%1' for '%2' must be an absolute filesystem "
+                               "path or null")
+                    .arg(name, filterId);
+        return false;
+    }
+    if (McpBridgePolicy::isBuiltInValue(filterId, name, value.toString())) {
+        if (normalized)
+            *normalized = value.toString();
+        return true;
+    }
+
+    const bool mustExist = kind == McpBridgePolicy::FilterPathKind::ExistingFile;
+    QString safePath;
+    if (!pathAllowed(value.toString(), mustExist, &safePath)) {
+        error = mustExist
+                    ? QStringLiteral("filter parameter '%1' for '%2' must reference an existing "
+                                     "absolute file inside allowed roots")
+                          .arg(name, filterId)
+                    : QStringLiteral("filter parameter '%1' for '%2' must be an absolute path "
+                                     "with an existing parent inside allowed roots")
+                          .arg(name, filterId);
+        return false;
+    }
+
+    const QFileInfo info(safePath);
+    if ((mustExist && !info.isFile()) || (info.exists() && !info.isFile())) {
+        error = QStringLiteral("filter parameter '%1' for '%2' must reference a file, not a "
+                               "directory")
+                    .arg(name, filterId);
+        return false;
+    }
+    if (normalized)
+        *normalized = safePath;
+    return true;
 }
 
 void McpBridge::loadAllowedRoots()
@@ -519,6 +676,8 @@ QString McpBridge::normalizedPathForPolicy(const QString &path, bool mustExist) 
 {
     QFileInfo info(path);
     if (!info.isAbsolute() || (mustExist && !info.exists()))
+        return QString();
+    if (info.isSymLink() && !info.exists())
         return QString();
     if (info.exists())
         return QDir::fromNativeSeparators(info.canonicalFilePath());

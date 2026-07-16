@@ -39,6 +39,8 @@ MLT_REVISION=
 LOG_COLORS=0
 SHOTCUT_HEAD=1
 SHOTCUT_REVISION=
+# Repository URL or local checkout path used for the Shotcut source.
+SHOTCUT_REPO="https://github.com/mltframework/shotcut.git"
 SHOTCUT_VERSION=$(date '+%y.%-m.%-d')
 ENABLE_BIGSH0T=1
 BIGSH0T_HEAD=0
@@ -439,7 +441,7 @@ function set_globals {
   REPOLOCS[1]="https://github.com/mltframework/mlt.git"
   REPOLOCS[2]="https://github.com/dyne/frei0r.git"
   REPOLOCS[3]="https://github.com/ddennedy/movit.git"
-  REPOLOCS[4]="https://github.com/mltframework/shotcut.git"
+  REPOLOCS[4]="$SHOTCUT_REPO"
   REPOLOCS[5]="https://github.com/ddennedy/ladspa-swh.git"
   REPOLOCS[6]="https://github.com/FFmpeg/nv-codec-headers.git"
   REPOLOCS[7]="https://github.com/GPUOpen-LibrariesAndSDKs/AMF.git"
@@ -941,7 +943,11 @@ function get_subproject {
           # No git repo
           debug "No git repo, need to check out"
           feedback_status "Cloning git sources for $1"
-          cmd git --no-pager clone --quiet --recurse-submodules $REPOLOC || die "Unable to git clone source for $1 from $REPOLOC"
+          if test "$1" = "shotcut" -a -d "$REPOLOC/.git"; then
+              cmd git -c "safe.directory=$REPOLOC" --no-pager clone --quiet --recurse-submodules "$REPOLOC" "$1" || die "Unable to git clone source for $1 from $REPOLOC"
+          else
+              cmd git --no-pager clone --quiet --recurse-submodules "$REPOLOC" "$1" || die "Unable to git clone source for $1 from $REPOLOC"
+          fi
           cmd cd $1 || die "Unable to change to directory $1"
           cmd git checkout --recurse-submodules $REVISION || die "Unable to git checkout $REVISION"
           [ "$SDK" = "1" -a "shotcut" != "$1" -a "mlt" != "$1" ] && cmd rm -rf .git

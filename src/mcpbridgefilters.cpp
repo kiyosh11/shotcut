@@ -60,15 +60,18 @@ bool McpBridge::applyFilterOperation(const QJsonObject &operation, QString &erro
 
     if (type == QStringLiteral("add_filter")) {
         Mlt::Producer producer = m_window.timelineDock()->producerForClip(track, clip);
+        auto *metadata = editableClipFilterMetadata(
+            operation.value(QStringLiteral("filter_id")).toString());
+        if (!metadata) {
+            error = QStringLiteral("filter_id is unknown or not editable on clips");
+            return false;
+        }
+        if (!validateClipFilterAddition(metadata, producer, error))
+            return false;
+
         auto *controller = m_window.filterController();
         controller->setCurrentFilter(QmlFilter::DeselectCurrentFilter);
         controller->setProducer(&producer);
-        auto *metadata = controller->metadata(
-            operation.value(QStringLiteral("filter_id")).toString());
-        if (!metadata) {
-            error = QStringLiteral("unknown filter_id");
-            return false;
-        }
         const int filterIndex = controller->attachedModel()->add(metadata);
         if (filterIndex < 0) {
             error = QStringLiteral("Shotcut could not add this filter to the clip");
@@ -106,12 +109,19 @@ bool McpBridge::applyFilterParameters(
         return false;
     }
 
+    const QString filterId = filter->objectNameOrService();
     filter->startUndoTracking();
     filter->startUndoParameterCommand(QStringLiteral("AI filter parameters"));
     for (auto it = parameters.constBegin(); it != parameters.constEnd(); ++it) {
         const auto value = it.value();
+        QString parameterValue;
+        if (!normalizeFilterPathParameter(filterId, it.key(), value, &parameterValue, error)) {
+            filter->endUndoCommand();
+            filter->stopUndoTracking();
+            return false;
+        }
         if (value.isString()) {
-            filter->set(it.key(), value.toString());
+            filter->set(it.key(), parameterValue);
         } else if (value.isBool()) {
             filter->set(it.key(), value.toBool());
         } else if (value.isDouble()) {

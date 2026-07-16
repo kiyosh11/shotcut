@@ -196,17 +196,23 @@ private:
                            const QString &target,
                            int realtime,
                            int pass = 0,
-                           const QThread::Priority priority = Settings.jobPriority());
+                           const QThread::Priority priority = Settings.jobPriority(),
+                           bool interactive = true,
+                           QString *errorMessage = nullptr);
     void runMelt(const QString &target, int realtime = -1);
+    bool hasPendingAnalysis() const;
     void enqueueAnalysis();
-    void enqueueMelt(const QStringList &targets, int realtime);
+    bool enqueueMelt(const QStringList &targets,
+                     int realtime,
+                     bool interactive = true,
+                     QString *errorMessage = nullptr);
     void encode(const QString &target);
     void resetOptions();
     Mlt::Producer *fromProducer(bool usePlaylistBin = false) const;
     static void filterCodecParams(const QString &vcodec, QStringList &other);
     void onVideoCodecComboChanged(int index, bool ignorePreset = false, bool resetBframes = true);
     void updateHdrMetaButton();
-    bool checkForMissingFiles();
+    bool checkForMissingFiles(bool interactive = true, QString *errorMessage = nullptr);
     QString &defaultFormatExtension();
     void initSpecialCodecLists();
     void setReframeEnabled(bool enabled);

@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use rmcp::schemars::JsonSchema;
+use rmcp::schemars::{self, JsonSchema};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -68,7 +68,9 @@ pub struct ApplyEditPlanRequest {
     /// Validate without changing the project.
     #[serde(default)]
     pub dry_run: bool,
-    /// Ordered editing operations. Later operations observe earlier operations.
+    /// Ordered editing operations. All edit indices are validated against the current snapshot.
+    /// Structural changes must be staged and applied, then the snapshot re-read before
+    /// addressing newly created, moved, split, or removed objects by index.
     pub operations: Vec<EditOperation>,
 }
 
@@ -117,7 +119,8 @@ pub enum FilterParameterValue {
 pub enum EditOperation {
     AddTrack {
         kind: TrackKind,
-        /// Insert at this index; omit to append.
+        /// Insert at this logical timeline index. Video tracks must remain before audio tracks.
+        /// Omit to use Shotcut's default position (top video or last audio).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         index: Option<i32>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -302,9 +305,7 @@ mod tests {
 
     #[test]
     fn save_requires_a_revision_and_defaults_safely() {
-        assert!(
-            serde_json::from_value::<SaveProjectRequest>(serde_json::json!({})).is_err()
-        );
+        assert!(serde_json::from_value::<SaveProjectRequest>(serde_json::json!({})).is_err());
         let request: SaveProjectRequest =
             serde_json::from_value(serde_json::json!({"expected_revision": 1})).unwrap();
         assert!(request.relative_paths);

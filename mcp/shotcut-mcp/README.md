@@ -23,13 +23,17 @@ The bridge is disabled unless SHOTCUT_MCP_ENABLE=1. When enabled it:
 
 - accepts only same-user local socket or named-pipe connections;
 - requires a session token of at least 32 characters on every request;
-- restricts project, media, save, and export paths to configured filesystem roots;
+- restricts project, media, save, export, and file-valued filter parameters to configured filesystem roots;
 - exposes typed editor operations and never exposes a shell or arbitrary command execution;
 - uses optimistic revision checks so an AI cannot silently overwrite newer manual edits;
-- supports dry-run validation and rolls a failed edit plan back through Shotcut's undo stack;
+- supports dry-run validation, refuses to overwrite native redo history, and removes a failed plan from history after reverting it;
 - marks modifying MCP tools as destructive so compatible clients can require approval.
 
 This is powerful editor access. Use a fresh token for each session, keep write approvals enabled, and restrict allowed roots to the media directories needed for the job.
+
+MCP project opening and export are deliberately noninteractive. Projects that require repair, missing-file relinking, processing-mode conversion, or auto-save recovery must be handled in Shotcut first. Export likewise returns an error when media is missing or a filter analysis is pending; complete the analysis in Shotcut and retry.
+
+MCP intentionally rejects non-null writes to the `html` and `resource` properties of `richText` and `qtext` filters because embedded markup can load external files. Use plain `argument` and styling properties, or insert pre-rendered media from an allowed root.
 
 ## Environment
 
@@ -49,9 +53,29 @@ Optional variables:
 
 If allowed roots are omitted, Shotcut permits the current user's home directory. An output file does not need to exist, but its parent directory must already exist inside an allowed root.
 
+## Build and install
+
+The sidecar is locked to the dependencies in `Cargo.lock` and the Rust version in `rust-toolchain.toml`. To build only the sidecar from this directory:
+
+```sh
+cargo build --release --locked
+```
+
+To build and install it together with a custom Shotcut build, enable the CMake option:
+
+```sh
+cmake -S /path/to/this/fork -B /path/to/build -DSHOTCUT_BUILD_MCP_SERVER=ON
+cmake --build /path/to/build
+cmake --install /path/to/build
+```
+
+`SHOTCUT_BUILD_MCP_SERVER` defaults to `OFF`. When enabled, CMake requires an existing `cargo` executable and fails clearly if it cannot find one. It never installs Rust, substitutes a prebuilt sidecar, or downloads an upstream Shotcut binary. Cargo can fetch the exact locked crates through its configured registry; use a vendored or offline Cargo configuration when builds must not access the network.
+
+The custom CMake target builds into `<build>/mcp-target/release`. Installation places the sidecar beside the Shotcut executable on Windows, in the application bundle on macOS, or in the configured binary directory on Unix.
+
 ## MCP client configuration
 
-Build the shotcut-mcp binary from this Cargo package when you are ready to compile the fork. Then copy [codex.example.toml](codex.example.toml) into the relevant part of your user or project Codex configuration and replace the command path.
+Copy [codex.example.toml](codex.example.toml) into the relevant part of your user or project Codex configuration and replace the command with the absolute path to the custom `shotcut-mcp` binary produced from this fork. Official Shotcut binaries do not include the local MCP bridge and cannot be used as a substitute.
 
 The same standard-I/O MCP server can be registered with another MCP client using that client's local-server configuration. It needs SHOTCUT_MCP_TOKEN, and it optionally needs the endpoint and timeout variables.
 
@@ -69,10 +93,12 @@ A capable AI should:
 6. Save explicitly.
 7. Export only after explicit approval, then poll export_status.
 
-Dry-run validation resolves track and clip indexes against the current snapshot. Apply structural stages that create, move, split, or remove indexed objects, then read a new snapshot before planning the next stage.
+All edit indices are validated against the current snapshot. Structural changes that create, move, split, or remove indexed objects must be staged: apply them, then read a new snapshot before planning the next stage. Before applying a plan, resolve any existing redo history in Shotcut; the bridge refuses to destroy it.
+
+Video tracks occupy the logical indexes before audio tracks. An explicit track insertion index must stay within that kind's region. When `index` is omitted, Shotcut adds a video track at the top or an audio track at the end.
 
 Filter operations use Shotcut filter IDs from the installed build. Media analysis, transcription, or generative assets can be performed by other approved MCP tools, then inserted through this server as files under an allowed root.
 
 ## Development status
 
-The source integration is complete on this branch, but it has intentionally not been built or launched while being prepared. Before distributing it, compile Shotcut and this Cargo package in a normal development environment and run the focused Rust, bridge, timeline, save, and export checks.
+GitHub Actions checks Rust formatting, Clippy warnings, and tests against the committed lockfile and pinned toolchain. The optional CMake target provides a reproducible build/install path without installing toolchains. Full Shotcut bridge, timeline, save, and export behavior still requires platform-specific integration and runtime testing before distribution.
