@@ -71,10 +71,87 @@ pub struct ApplyEditPlanRequest {
     /// Validate without changing the project.
     #[serde(default)]
     pub dry_run: bool,
-    /// Ordered editing operations. All edit indices are validated against the current snapshot.
-    /// Structural changes must be staged and applied, then the snapshot re-read before
-    /// addressing newly created, moved, split, or removed objects by index.
+    /// Ordered editing operations. Real plans resolve indices and validate operations
+    /// sequentially inside one undo transaction. Dry runs do not mutate the project, so a
+    /// potentially invalidating operation must be last and longer dry-run workflows must be
+    /// staged against fresh snapshots.
     pub operations: Vec<EditOperation>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct EditorControlRequest {
+    /// Revision returned by project_snapshot or editor_status. This prevents selection commands
+    /// from addressing a clip after the timeline changed.
+    pub expected_revision: i64,
+    pub command: EditorCommand,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "action", rename_all = "snake_case")]
+pub enum EditorCommand {
+    Seek {
+        /// Absolute timeline position in frames.
+        position: i32,
+    },
+    SeekRelative {
+        /// Signed number of frames to move from the current playhead.
+        frames: i32,
+    },
+    SelectClip {
+        track: i32,
+        clip: i32,
+    },
+    SelectTrack {
+        track: i32,
+    },
+    ClearSelection,
+    Play {
+        /// Playback rate. Negative values play in reverse; zero is not accepted.
+        #[serde(default = "default_playback_speed")]
+        speed: f64,
+    },
+    Pause,
+    Stop,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SetProjectProfileRequest {
+    /// Revision returned by project_snapshot or editor_status.
+    pub expected_revision: i64,
+    /// Even frame width in pixels.
+    pub width: u32,
+    /// Even frame height in pixels.
+    pub height: u32,
+    pub frame_rate_num: u32,
+    pub frame_rate_den: u32,
+    pub progressive: bool,
+    pub colorspace: ProfileColorspace,
+    pub dynamic_range: ProfileDynamicRange,
+    /// Optional display-aspect numerator. Supply both display-aspect fields or neither; omitted
+    /// values use square pixels and the frame dimensions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_aspect_num: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_aspect_den: Option<u32>,
+    /// Must be true when a loaded project has undo history. Shotcut reloads the in-memory project
+    /// under the new profile and cannot safely retain history made under the old frame geometry.
+    pub clear_undo_history: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ProfileColorspace {
+    Bt601,
+    Bt709,
+    Bt2020,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ProfileDynamicRange {
+    Sdr,
+    Hlg,
+    Pq,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -96,6 +173,56 @@ pub enum TrimEdge {
 pub enum FadeEdge {
     In,
     Out,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum KeyframeInterpolation {
+    /// Compatibility alias for Shotcut's native discrete interpolation.
+    Hold,
+    Linear,
+    /// Compatibility alias for Shotcut's native smooth-natural interpolation.
+    Smooth,
+    /// Compatibility alias for Shotcut's native cubic ease-in interpolation.
+    EaseIn,
+    /// Compatibility alias for Shotcut's native cubic ease-out interpolation.
+    EaseOut,
+    /// Compatibility alias for Shotcut's native cubic ease-in-out interpolation.
+    EaseInOut,
+    Discrete,
+    SmoothLoose,
+    SmoothNatural,
+    SmoothTight,
+    EaseInSinusoidal,
+    EaseOutSinusoidal,
+    EaseInOutSinusoidal,
+    EaseInQuadratic,
+    EaseOutQuadratic,
+    EaseInOutQuadratic,
+    EaseInCubic,
+    EaseOutCubic,
+    EaseInOutCubic,
+    EaseInQuartic,
+    EaseOutQuartic,
+    EaseInOutQuartic,
+    EaseInQuintic,
+    EaseOutQuintic,
+    EaseInOutQuintic,
+    EaseInExponential,
+    EaseOutExponential,
+    EaseInOutExponential,
+    EaseInCircular,
+    EaseOutCircular,
+    EaseInOutCircular,
+    EaseInBack,
+    EaseOutBack,
+    EaseInOutBack,
+    EaseInElastic,
+    EaseOutElastic,
+    EaseInOutElastic,
+    EaseInBounce,
+    EaseOutBounce,
+    EaseInOutBounce,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -176,6 +303,21 @@ pub enum EditOperation {
         #[serde(default)]
         ripple: bool,
     },
+    SetClipSpeed {
+        track: i32,
+        clip: i32,
+        /// Constant playback-speed multiplier from 0.05 through 20.0.
+        speed: f64,
+        /// Preserve audio pitch while changing speed.
+        #[serde(default)]
+        preserve_pitch: bool,
+        /// Ripple the changed duration through the track.
+        #[serde(default = "default_true")]
+        ripple: bool,
+        /// Ripple synchronized tracks as well. Ignored unless ripple is true.
+        #[serde(default)]
+        ripple_all_tracks: bool,
+    },
     SetClipGain {
         track: i32,
         clip: i32,
@@ -196,6 +338,13 @@ pub enum EditOperation {
         #[serde(default)]
         ripple: bool,
     },
+    #[schemars(extend("anyOf" = [
+        {"required": ["name"]},
+        {"required": ["muted"]},
+        {"required": ["hidden"]},
+        {"required": ["composite"]},
+        {"required": ["locked"]}
+    ]))]
     SetTrackState {
         track: i32,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -221,7 +370,66 @@ pub enum EditOperation {
         track: i32,
         clip: i32,
         filter_index: i32,
+        #[schemars(extend("minProperties" = 1))]
         parameters: BTreeMap<String, FilterParameterValue>,
+    },
+    SetFilterState {
+        track: i32,
+        clip: i32,
+        filter_index: i32,
+        disabled: bool,
+    },
+    RemoveFilter {
+        track: i32,
+        clip: i32,
+        filter_index: i32,
+    },
+    SetFilterKeyframe {
+        track: i32,
+        clip: i32,
+        filter_index: i32,
+        /// Keyframe-capable numeric property reported by the filter catalog.
+        property: String,
+        /// Position relative to the clip in frames.
+        position: i32,
+        value: f64,
+        /// Required when creating a point. Omit when updating only the value of an existing
+        /// point to preserve its exact native interpolation type.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        interpolation: Option<KeyframeInterpolation>,
+    },
+    RemoveFilterKeyframe {
+        track: i32,
+        clip: i32,
+        filter_index: i32,
+        property: String,
+        /// Position relative to the clip in frames.
+        position: i32,
+    },
+    AddMarker {
+        text: String,
+        /// Absolute timeline position in frames.
+        start: i32,
+        /// Optional exclusive range end. Omit for a point marker.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        end: Option<i32>,
+        /// Optional #RRGGBB color. Omit to use the user's current Shotcut marker color.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        color: Option<String>,
+    },
+    UpdateMarker {
+        marker_index: i32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        text: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        start: Option<i32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        end: Option<i32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        color: Option<String>,
+    },
+    RemoveMarker {
+        marker_index: i32,
     },
     AddSubtitleTrack {
         name: String,
@@ -230,6 +438,7 @@ pub enum EditOperation {
     },
     ReplaceSubtitles {
         track: i32,
+        /// Complete replacement contents for this subtitle track. An empty list clears it.
         items: Vec<SubtitleSpec>,
     },
 }
@@ -257,6 +466,10 @@ const fn default_true() -> bool {
 
 const fn default_one() -> u32 {
     1
+}
+
+const fn default_playback_speed() -> f64 {
+    1.0
 }
 
 #[cfg(test)]
@@ -304,6 +517,145 @@ mod tests {
     fn unknown_operations_are_rejected() {
         let value = serde_json::json!({"op": "run_shell", "command": "nope"});
         assert!(serde_json::from_value::<EditOperation>(value).is_err());
+    }
+
+    #[test]
+    fn production_edit_defaults_are_explicit_and_safe() {
+        let speed: EditOperation = serde_json::from_value(serde_json::json!({
+            "op": "set_clip_speed",
+            "track": 0,
+            "clip": 1,
+            "speed": 1.25
+        }))
+        .unwrap();
+        assert!(matches!(
+            speed,
+            EditOperation::SetClipSpeed {
+                ripple: true,
+                ripple_all_tracks: false,
+                preserve_pitch: false,
+                ..
+            }
+        ));
+
+        let keyframe: EditOperation = serde_json::from_value(serde_json::json!({
+            "op": "set_filter_keyframe",
+            "track": 0,
+            "clip": 1,
+            "filter_index": 0,
+            "property": "level",
+            "position": 12,
+            "value": 0.5
+        }))
+        .unwrap();
+        assert!(matches!(
+            keyframe,
+            EditOperation::SetFilterKeyframe {
+                interpolation: None,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn native_keyframe_interpolations_round_trip_exactly() {
+        const NATIVE_NAMES: [&str; 35] = [
+            "discrete",
+            "linear",
+            "smooth_loose",
+            "smooth_natural",
+            "smooth_tight",
+            "ease_in_sinusoidal",
+            "ease_out_sinusoidal",
+            "ease_in_out_sinusoidal",
+            "ease_in_quadratic",
+            "ease_out_quadratic",
+            "ease_in_out_quadratic",
+            "ease_in_cubic",
+            "ease_out_cubic",
+            "ease_in_out_cubic",
+            "ease_in_quartic",
+            "ease_out_quartic",
+            "ease_in_out_quartic",
+            "ease_in_quintic",
+            "ease_out_quintic",
+            "ease_in_out_quintic",
+            "ease_in_exponential",
+            "ease_out_exponential",
+            "ease_in_out_exponential",
+            "ease_in_circular",
+            "ease_out_circular",
+            "ease_in_out_circular",
+            "ease_in_back",
+            "ease_out_back",
+            "ease_in_out_back",
+            "ease_in_elastic",
+            "ease_out_elastic",
+            "ease_in_out_elastic",
+            "ease_in_bounce",
+            "ease_out_bounce",
+            "ease_in_out_bounce",
+        ];
+
+        for name in NATIVE_NAMES {
+            let interpolation: KeyframeInterpolation =
+                serde_json::from_value(serde_json::json!(name)).unwrap();
+            assert_eq!(
+                serde_json::to_value(interpolation).unwrap(),
+                serde_json::json!(name)
+            );
+        }
+    }
+
+    #[test]
+    fn editor_control_is_a_closed_typed_command_set() {
+        let request: EditorControlRequest = serde_json::from_value(serde_json::json!({
+            "expected_revision": 4,
+            "command": {"action": "seek_relative", "frames": -1}
+        }))
+        .unwrap();
+        assert!(matches!(
+            request.command,
+            EditorCommand::SeekRelative { frames: -1 }
+        ));
+        assert!(serde_json::from_value::<EditorControlRequest>(serde_json::json!({
+            "expected_revision": 4,
+            "command": {"action": "run_shell"}
+        }))
+        .is_err());
+    }
+
+    #[test]
+    fn project_profile_requires_every_format_choice() {
+        let explicit: SetProjectProfileRequest =
+            serde_json::from_value(serde_json::json!({
+                "expected_revision": 9,
+                "width": 1080,
+                "height": 1920,
+                "frame_rate_num": 30000,
+                "frame_rate_den": 1001,
+                "progressive": true,
+                "colorspace": "bt709",
+                "dynamic_range": "sdr",
+                "clear_undo_history": true
+            }))
+            .unwrap();
+        assert_eq!(explicit.width, 1080);
+        assert_eq!(explicit.height, 1920);
+        assert_eq!(explicit.frame_rate_num, 30000);
+        assert_eq!(explicit.frame_rate_den, 1001);
+
+        let missing_format_choice = serde_json::json!({
+            "expected_revision": 9,
+            "width": 1080,
+            "height": 1920,
+            "frame_rate_num": 30000,
+            "frame_rate_den": 1001,
+            "clear_undo_history": true
+        });
+        let missing_result =
+            serde_json::from_value::<SetProjectProfileRequest>(missing_format_choice);
+        assert!(missing_result.is_err());
     }
 
     #[test]

@@ -368,7 +368,13 @@ UndoParameterCommand::UndoParameterCommand(const QString &name,
 void UndoParameterCommand::update(const QString &propertyName)
 {
     Mlt::Service *service = m_filterController->attachedModel()->getService(m_row);
-    m_after.pass_property(*service, propertyName.toUtf8().constData());
+    const QByteArray name = propertyName.toUtf8();
+    if (!m_updatedProperties.contains(propertyName))
+        m_updatedProperties.append(propertyName);
+    if (service->property_exists(name.constData()))
+        m_after.pass_property(*service, name.constData());
+    else
+        m_after.clear(name.constData());
 }
 
 void UndoParameterCommand::redo()
@@ -381,7 +387,12 @@ void UndoParameterCommand::redo()
         Q_ASSERT(producer.is_valid());
         if (producer.is_valid() && m_filterController) {
             Mlt::Service service = m_filterController->attachedModel()->doGetService(producer,
-                                                                                     m_row);
+                                                                                    m_row);
+            for (const QString &propertyName : m_updatedProperties) {
+                const QByteArray name = propertyName.toUtf8();
+                if (!m_after.property_exists(name.constData()))
+                    service.clear(name.constData());
+            }
             service.inherit(m_after);
             m_filterController->onUndoOrRedo(service);
         }
@@ -395,6 +406,11 @@ void UndoParameterCommand::undo()
     Q_ASSERT(producer.is_valid());
     if (producer.is_valid() && m_filterController) {
         Mlt::Service service = m_filterController->attachedModel()->doGetService(producer, m_row);
+        for (const QString &propertyName : m_updatedProperties) {
+            const QByteArray name = propertyName.toUtf8();
+            if (!m_before.property_exists(name.constData()))
+                service.clear(name.constData());
+        }
         service.inherit(m_before);
         m_filterController->onUndoOrRedo(service);
     }
@@ -409,6 +425,10 @@ bool UndoParameterCommand::mergeWith(const QUndoCommand *other)
         || that->text() != text())
         return false;
     m_after = that->m_after;
+    for (const QString &propertyName : that->m_updatedProperties) {
+        if (!m_updatedProperties.contains(propertyName))
+            m_updatedProperties.append(propertyName);
+    }
     return true;
 }
 

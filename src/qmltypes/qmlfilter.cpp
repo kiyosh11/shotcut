@@ -1176,7 +1176,11 @@ void QmlFilter::updateUndoCommand(const QString &name)
         LOG_ERROR() << "Unable to find command in progress";
         return;
     }
-    m_previousState.pass_property(m_service, name.toUtf8().constData());
+    const QByteArray propertyName = name.toUtf8();
+    if (m_service.property_exists(propertyName.constData()))
+        m_previousState.pass_property(m_service, propertyName.constData());
+    else
+        m_previousState.clear(propertyName.constData());
 }
 
 /*!

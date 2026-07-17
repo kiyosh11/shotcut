@@ -9,16 +9,19 @@ use serde_json::{Value, json};
 use crate::{
     bridge::{BridgeClient, BridgeError},
     schema::{
-        ApplyEditPlanRequest, ExportStatusRequest, ExportVideoRequest, FullVideoPromptArgs,
-        HistoryRequest, OpenProjectRequest, SaveProjectRequest,
+        ApplyEditPlanRequest, EditorControlRequest, ExportStatusRequest, ExportVideoRequest,
+        FullVideoPromptArgs, HistoryRequest, OpenProjectRequest, SaveProjectRequest,
+        SetProjectProfileRequest,
     },
 };
 
 const INSTRUCTIONS: &str = "Control the live Shotcut editor through a local authenticated bridge. \
 Always call editor_status and project_snapshot before writes. Pass the returned revision as \
-expected_revision and dry-run edit plans before applying them. Editing, save, undo, redo, and \
-export tools change local state or files and require user approval. Never invent track or clip \
-indexes or paths; use snapshot data. Export only when the user explicitly requests it.";
+expected_revision and dry-run independent edit stages before applying them. Real multi-operation \
+plans are validated sequentially inside one undo transaction. Editing, save, undo, redo, and \
+export tools change local state or files and require user approval. Use control_editor only for \
+typed transport and selection commands. Never invent track, clip, marker, filter, keyframe, profile, \
+or path values; use snapshot and catalog data. Export only when the user explicitly requests it.";
 
 #[derive(Clone)]
 pub struct ShotcutServer {
@@ -37,12 +40,22 @@ impl ShotcutServer {
         P: Serialize,
     {
         match self.bridge.call(method, params).await {
-            Ok(value) => Ok(CallToolResult::success(vec![ContentBlock::text(
-                format_json(&value),
-            )])),
-            Err(error) => Ok(CallToolResult::error(vec![ContentBlock::text(
-                error.to_string(),
-            )])),
+            Ok(value) => {
+                let mut result = CallToolResult::structured(value);
+                // structuredContent is authoritative. Keep the text block small instead of
+                // duplicating large project snapshots in every successful MCP response.
+                result.content = vec![ContentBlock::text(
+                    "Shotcut returned the result as structured JSON.",
+                )];
+                Ok(result)
+            }
+            Err(error) => {
+                let message = error.to_string();
+                let value = error.structured();
+                let mut result = CallToolResult::structured_error(value);
+                result.content = vec![ContentBlock::text(message)];
+                Ok(result)
+            }
         }
     }
 }
@@ -63,7 +76,7 @@ impl ShotcutServer {
     }
 
     #[tool(
-        description = "Read the complete live timeline snapshot: tracks, clips, filters, subtitles, selection, profile, and revision.",
+        description = "Read the complete live timeline snapshot: exact profile, tracks, clips, filters and numeric keyframes, markers, subtitles, selection, and revision.",
         annotations(
             read_only_hint = true,
             destructive_hint = false,
@@ -73,6 +86,22 @@ impl ShotcutServer {
     )]
     async fn project_snapshot(&self) -> Result<CallToolResult, McpError> {
         self.run_tool("project.snapshot", json!({})).await
+    }
+
+    #[tool(
+        description = "Control the live Shotcut playhead, playback, and timeline selection through a closed typed command set. Every command uses optimistic revision checking.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false,
+            open_world_hint = false
+        )
+    )]
+    async fn control_editor(
+        &self,
+        Parameters(request): Parameters<EditorControlRequest>,
+    ) -> Result<CallToolResult, McpError> {
+        self.run_tool("editor.control", request).await
     }
 
     #[tool(
@@ -108,7 +137,23 @@ impl ShotcutServer {
     }
 
     #[tool(
-        description = "Validate or apply an ordered, typed full-video edit plan as one Shotcut undo-history entry.",
+        description = "Set an explicit project video profile, including vertical dimensions, exact rational frame rate, colorspace, and dynamic range. A loaded project is reloaded in memory and incompatible undo history must be explicitly cleared.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    async fn set_project_profile(
+        &self,
+        Parameters(request): Parameters<SetProjectProfileRequest>,
+    ) -> Result<CallToolResult, McpError> {
+        self.run_tool("project.set_profile", request).await
+    }
+
+    #[tool(
+        description = "Validate or apply an ordered, typed full-video edit plan. Real plans validate sequentially and commit as one Shotcut undo-history entry; dependent dry runs must be staged because they do not mutate intermediate state.",
         annotations(
             read_only_hint = false,
             destructive_hint = true,
@@ -219,9 +264,10 @@ impl ShotcutServer {
             PromptMessage::new_text(
                 Role::Assistant,
                 "Act as a careful video editor. Inspect editor_status and project_snapshot first. \
-Build edits from the reported frame rate and real track/clip indexes. Submit a dry-run plan using \
-the snapshot revision, correct any validation errors, then ask for approval before applying. \
-Re-read the snapshot after major stages. Save before export and never overwrite a target unless \
+Build edits from the reported frame rate and real track/clip indexes. Dry-run independent stages \
+using the snapshot revision; dependent stages need fresh snapshots because dry runs do not simulate \
+intermediate mutations. Ask for approval before applying the sequential real plan. Re-read the \
+snapshot after major stages. Save before export and never overwrite a target unless \
 the user explicitly requested it.",
             ),
             PromptMessage::new_text(
@@ -305,11 +351,13 @@ fn format_json(value: &Value) -> String {
 mod tests {
     use super::*;
 
-    const TOOL_NAMES: [&str; 9] = [
+    const TOOL_NAMES: [&str; 11] = [
         "editor_status",
         "project_snapshot",
+        "control_editor",
         "open_project",
         "save_project",
+        "set_project_profile",
         "apply_edit_plan",
         "undo",
         "redo",

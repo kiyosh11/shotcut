@@ -18,6 +18,7 @@ use tokio::{
 const DEFAULT_ENDPOINT: &str = "shotcut-mcp";
 const DEFAULT_TIMEOUT_SECONDS: u64 = 300;
 const MAX_MESSAGE_BYTES: usize = 16 * 1024 * 1024;
+const BRIDGE_PROTOCOL_VERSION: u32 = 2;
 
 fn framed_message_fits(payload_bytes: usize, max_bytes: usize) -> bool {
     payload_bytes
@@ -43,6 +44,36 @@ pub enum BridgeError {
     },
     #[error("failed to encode or decode bridge JSON: {0}")]
     Json(#[from] serde_json::Error),
+}
+
+impl BridgeError {
+    pub fn structured(&self) -> Value {
+        match self {
+            Self::Remote {
+                code,
+                message,
+                data,
+            } => serde_json::json!({
+                "kind": "remote",
+                "code": code,
+                "message": message,
+                "data": data.0.clone(),
+            }),
+            Self::Configuration(_) => {
+                serde_json::json!({"kind": "configuration", "message": self.to_string()})
+            }
+            Self::Io(_) => serde_json::json!({"kind": "io", "message": self.to_string()}),
+            Self::Timeout(seconds) => serde_json::json!({
+                "kind": "timeout",
+                "timeout_seconds": seconds,
+                "message": self.to_string(),
+            }),
+            Self::InvalidResponse(_) => {
+                serde_json::json!({"kind": "invalid_response", "message": self.to_string()})
+            }
+            Self::Json(_) => serde_json::json!({"kind": "json", "message": self.to_string()}),
+        }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -78,6 +109,8 @@ struct RpcResponse {
     jsonrpc: String,
     id: Value,
     #[serde(default)]
+    bridge_protocol: Option<u32>,
+    #[serde(default)]
     result: Option<Value>,
     #[serde(default)]
     error: Option<RpcError>,
@@ -89,6 +122,39 @@ struct RpcError {
     message: String,
     #[serde(default)]
     data: Option<Value>,
+}
+
+fn decode_response(response_text: &str, expected_id: u64) -> Result<Value, BridgeError> {
+    let response: RpcResponse = serde_json::from_str(response_text)?;
+    if response.bridge_protocol != Some(BRIDGE_PROTOCOL_VERSION) {
+        return Err(BridgeError::InvalidResponse(format!(
+            "incompatible bridge protocol: expected {BRIDGE_PROTOCOL_VERSION}, received {}",
+            response
+                .bridge_protocol
+                .map_or_else(|| "missing".to_owned(), |value| value.to_string())
+        )));
+    }
+    if response.jsonrpc != "2.0" {
+        return Err(BridgeError::InvalidResponse(
+            "jsonrpc must equal 2.0".into(),
+        ));
+    }
+    if response.id != expected_id {
+        return Err(BridgeError::InvalidResponse(format!(
+            "response id {} does not match request id {expected_id}",
+            response.id
+        )));
+    }
+    if let Some(error) = response.error {
+        return Err(BridgeError::Remote {
+            code: error.code,
+            message: error.message,
+            data: DisplayData(error.data),
+        });
+    }
+    response
+        .result
+        .ok_or_else(|| BridgeError::InvalidResponse("missing result and error".into()))
 }
 
 impl BridgeClient {
@@ -142,28 +208,7 @@ impl BridgeClient {
             )));
         }
 
-        let response: RpcResponse = serde_json::from_str(&response_text)?;
-        if response.jsonrpc != "2.0" {
-            return Err(BridgeError::InvalidResponse(
-                "jsonrpc must equal 2.0".into(),
-            ));
-        }
-        if response.id != id {
-            return Err(BridgeError::InvalidResponse(format!(
-                "response id {} does not match request id {id}",
-                response.id
-            )));
-        }
-        if let Some(error) = response.error {
-            return Err(BridgeError::Remote {
-                code: error.code,
-                message: error.message,
-                data: DisplayData(error.data),
-            });
-        }
-        response
-            .result
-            .ok_or_else(|| BridgeError::InvalidResponse("missing result and error".into()))
+        decode_response(&response_text, id)
     }
 
     fn build_request<'a, P>(
@@ -186,6 +231,10 @@ impl BridgeClient {
             }
         };
         object.insert("token".into(), Value::String(self.token.clone()));
+        object.insert(
+            "bridge_protocol".into(),
+            Value::Number(BRIDGE_PROTOCOL_VERSION.into()),
+        );
 
         Ok(RpcRequest {
             jsonrpc: "2.0",
@@ -313,6 +362,7 @@ mod tests {
             .unwrap();
         assert_eq!(request.id, 7);
         assert_eq!(request.params["token"], "0123456789abcdef0123456789abcdef");
+        assert_eq!(request.params["bridge_protocol"], BRIDGE_PROTOCOL_VERSION);
     }
 
     #[test]
@@ -328,6 +378,30 @@ mod tests {
         ));
         assert!(!framed_message_fits(MAX_MESSAGE_BYTES, MAX_MESSAGE_BYTES));
         assert!(!framed_message_fits(usize::MAX, MAX_MESSAGE_BYTES));
+    }
+
+    #[test]
+    fn response_requires_the_exact_bridge_protocol() {
+        let missing = r#"{"jsonrpc":"2.0","id":1,"result":{}}"#;
+        assert!(matches!(
+            decode_response(missing, 1),
+            Err(BridgeError::InvalidResponse(message)) if message.contains("received missing")
+        ));
+
+        let wrong = r#"{"jsonrpc":"2.0","id":1,"bridge_protocol":1,"result":{}}"#;
+        assert!(matches!(
+            decode_response(wrong, 1),
+            Err(BridgeError::InvalidResponse(message)) if message.contains("received 1")
+        ));
+
+        let current = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "bridge_protocol": BRIDGE_PROTOCOL_VERSION,
+            "result": {"ok": true},
+        })
+        .to_string();
+        assert_eq!(decode_response(&current, 1).unwrap()["ok"], true);
     }
 
     async fn read_fixture(input: &[u8], limit: usize) -> io::Result<String> {

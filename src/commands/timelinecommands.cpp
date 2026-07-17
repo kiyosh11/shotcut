@@ -1985,6 +1985,11 @@ void UpdateCommand::setPosition(int trackIndex, int clipIndex, int position)
     m_undoHelper.recordBeforeState();
 }
 
+void UpdateCommand::setRipple(bool ripple)
+{
+    m_ripple = ripple;
+}
+
 void UpdateCommand::setRippleAllTracks(bool ripple)
 {
     m_rippleAllTracks = ripple;
@@ -2399,7 +2404,7 @@ ChangeGainCommand::ChangeGainCommand(
     , m_gain(gain)
 {
     QModelIndex modelIndex = m_model.index(clipIndex, 0, m_model.index(trackIndex));
-    m_previous = model.data(modelIndex, MultitrackModel::GainRole).toInt();
+    m_previous = model.data(modelIndex, MultitrackModel::GainRole).toDouble();
     setText(QObject::tr("Adjust gain/volume"));
 }
 

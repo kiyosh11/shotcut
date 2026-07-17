@@ -792,6 +792,7 @@ public:
                   QUndoCommand *parent = 0);
     void setXmlAfter(const QString &xml);
     void setPosition(int trackIndex, int clipIndex, int position);
+    void setRipple(bool);
     void setRippleAllTracks(bool);
     int trackIndex() const { return m_trackIndex; }
     int clipIndex() const { return m_clipIndex; }
