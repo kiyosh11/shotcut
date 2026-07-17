@@ -135,8 +135,7 @@ jobs:
           }
           ldd_output="$(ldd Shotcut/shotcut-mcp.exe 2>&1 || true)"
           if grep -q 'not found' <<<"$ldd_output"; then
-            printf '%s
-' "$ldd_output" >&2
+            printf '%s\n' "$ldd_output" >&2
             exit 1
           fi
           zip -gr shotcut-win64-$VERSION.zip Shotcut
