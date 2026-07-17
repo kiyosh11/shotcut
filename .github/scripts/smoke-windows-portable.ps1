@@ -135,6 +135,78 @@ function Get-ThumbnailCount([string] $Directory)
     ).Count
 }
 
+function Test-McpSidecarStartup
+{
+    $startInfo = [Diagnostics.ProcessStartInfo]::new()
+    $startInfo.FileName = $sidecar
+    $startInfo.WorkingDirectory = $portable
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.RedirectStandardInput = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    $startInfo.Environment['PATH'] = @(
+        $portable,
+        (Join-Path $env:SystemRoot 'System32'),
+        $env:SystemRoot
+    ) -join ';'
+    foreach ($name in @(
+        'SHOTCUT_MCP_ENABLE',
+        'SHOTCUT_MCP_TOKEN',
+        'SHOTCUT_MCP_ENDPOINT',
+        'SHOTCUT_MCP_ALLOWED_ROOTS',
+        'RUST_LOG'
+    )) {
+        [void] $startInfo.Environment.Remove($name)
+    }
+
+    $process = [Diagnostics.Process]::new()
+    $process.StartInfo = $startInfo
+    $started = $false
+    try {
+        if (-not $process.Start()) {
+            throw 'shotcut-mcp.exe Process.Start returned false'
+        }
+        $started = $true
+        $process.StandardInput.Close()
+        if (-not $process.WaitForExit(10000)) {
+            throw 'shotcut-mcp.exe did not report its missing-token configuration error'
+        }
+
+        $stdout = $process.StandardOutput.ReadToEnd()
+        $stderr = $process.StandardError.ReadToEnd()
+        @(
+            "exit_code=$($process.ExitCode)"
+            '--- stdout ---'
+            $stdout
+            '--- stderr ---'
+            $stderr
+        ) | Set-Content (Join-Path $diagnostics 'shotcut-mcp-startup.txt') -Encoding utf8
+
+        if ($process.ExitCode -ne 1) {
+            throw "shotcut-mcp.exe returned $(Format-ExitCode $process); expected configuration exit 1"
+        }
+        if (
+            $stderr -notmatch 'failed to configure Shotcut MCP' -or
+            $stderr -notmatch 'SHOTCUT_MCP_TOKEN'
+        ) {
+            throw 'shotcut-mcp.exe did not emit the expected missing-token configuration error'
+        }
+    } finally {
+        if ($started -and -not $process.HasExited) {
+            try {
+                $process.Kill($true)
+            } catch {
+            }
+            try {
+                [void] $process.WaitForExit(10000)
+            } catch {
+            }
+        }
+        $process.Dispose()
+    }
+}
+
 function Invoke-ShotcutSmoke([ValidateSet('d3d11', 'opengl')] [string] $Backend)
 {
     $runRoot = Join-Path $diagnostics $Backend
@@ -387,6 +459,8 @@ function Invoke-ShotcutSmoke([ValidateSet('d3d11', 'opengl')] [string] $Backend)
         $process.Dispose()
     }
 }
+
+Test-McpSidecarStartup
 
 $failures = [Collections.Generic.List[string]]::new()
 foreach ($backend in @('d3d11', 'opengl')) {
