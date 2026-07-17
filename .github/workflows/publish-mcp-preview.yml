@@ -1,0 +1,190 @@
+name: Publish MCP preview release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: publish-mcp-preview-c12b1d6
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TARGET_SHA: c12b1d6d568798e64720e39f06fa82832f79ac63
+      RELEASE_TAG: mcp-preview-c12b1d6
+      WINDOWS_ARTIFACT_ID: "8410977929"
+      WINDOWS_ARTIFACT_NAME: windows-x64-portable
+      WINDOWS_ARTIFACT_RUN_ID: "29587436714"
+      WINDOWS_ARTIFACT_DIGEST: sha256:dbace289af43d60d39ea34f7a4fba8dd845d494de3b15ad27a8402387445a96d
+      WINDOWS_FILENAME: shotcut-win64-26.7.17.zip
+      LINUX_ARTIFACT_ID: "8410965663"
+      LINUX_ARTIFACT_NAME: linux-portable
+      LINUX_ARTIFACT_RUN_ID: "29587436582"
+      LINUX_ARTIFACT_DIGEST: sha256:5a0110cad3c7759d41c6191ed87b0d97b4892ca211fd6b50254ddebacb45821c
+      LINUX_FILENAME: shotcut-linux-x86_64-26.7.17.txz
+
+    steps:
+      - name: Publish verified portable artifacts
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          umask 077
+
+          work_dir="$(mktemp -d)"
+          trap 'rm -rf "${work_dir}"' EXIT
+          release_dir="${work_dir}/release-assets"
+          mkdir -p "${release_dir}"
+
+          api_root="https://api.github.com/repos/${GITHUB_REPOSITORY}"
+          api_headers=(
+            --header "Authorization: Bearer ${GH_TOKEN}"
+            --header "Accept: application/vnd.github+json"
+            --header "X-GitHub-Api-Version: 2022-11-28"
+          )
+          curl_get=(
+            --fail
+            --silent
+            --show-error
+            --location
+            --retry 3
+            --retry-all-errors
+            --proto "=https"
+            --tlsv1.2
+          )
+
+          require_absent() {
+            local url="$1"
+            local label="$2"
+            local status
+            status="$(
+              curl --silent --show-error                 --output /dev/null                 --write-out '%{http_code}'                 --proto '=https'                 --tlsv1.2                 "${api_headers[@]}"                 "${url}"
+            )"
+            case "${status}" in
+              404) ;;
+              200)
+                echo "${label} already exists; refusing to overwrite it." >&2
+                exit 1
+                ;;
+              *)
+                echo "Unexpected HTTP status ${status} while checking ${label}." >&2
+                exit 1
+                ;;
+            esac
+          }
+
+          validate_artifact() {
+            local id="$1"
+            local expected_name="$2"
+            local expected_run_id="$3"
+            local expected_digest="$4"
+            local metadata
+            metadata="$(
+              curl "${curl_get[@]}" "${api_headers[@]}"                 "${api_root}/actions/artifacts/${id}"
+            )"
+            jq -e               --arg name "${expected_name}"               --arg sha "${TARGET_SHA}"               --argjson run_id "${expected_run_id}"               --arg digest "${expected_digest}"               '
+                .name == $name
+                and .expired == false
+                and .workflow_run.head_sha == $sha
+                and .workflow_run.id == $run_id
+                and .digest == $digest
+              ' <<<"${metadata}" >/dev/null
+          }
+
+          download_artifact() {
+            local id="$1"
+            local expected_digest="$2"
+            local output="$3"
+            curl "${curl_get[@]}" "${api_headers[@]}"               "${api_root}/actions/artifacts/${id}/zip"               --output "${output}"
+            printf '%s  %s\n' "${expected_digest#sha256:}" "${output}"               | sha256sum --check --strict
+          }
+
+          extract_single_file() {
+            local archive="$1"
+            local expected_name="$2"
+            local entries=()
+            unzip -tqq "${archive}" >/dev/null
+            mapfile -t entries < <(unzip -Z1 "${archive}")
+            if (( ${#entries[@]} != 1 )); then
+              echo "Expected one artifact entry, found ${#entries[@]}." >&2
+              exit 1
+            fi
+            if [[ "${entries[0]}" != "${expected_name}" ]]; then
+              echo "Unexpected artifact entry: ${entries[0]}" >&2
+              exit 1
+            fi
+            unzip -p "${archive}" "${expected_name}"               > "${release_dir}/${expected_name}"
+            test -s "${release_dir}/${expected_name}"
+          }
+
+          require_absent "${api_root}/releases/tags/${RELEASE_TAG}"             "release ${RELEASE_TAG}"
+          require_absent "${api_root}/git/ref/tags/${RELEASE_TAG}"             "tag ${RELEASE_TAG}"
+
+          validate_artifact             "${WINDOWS_ARTIFACT_ID}"             "${WINDOWS_ARTIFACT_NAME}"             "${WINDOWS_ARTIFACT_RUN_ID}"             "${WINDOWS_ARTIFACT_DIGEST}"
+          validate_artifact             "${LINUX_ARTIFACT_ID}"             "${LINUX_ARTIFACT_NAME}"             "${LINUX_ARTIFACT_RUN_ID}"             "${LINUX_ARTIFACT_DIGEST}"
+
+          windows_outer="${work_dir}/windows-artifact.zip"
+          linux_outer="${work_dir}/linux-artifact.zip"
+          download_artifact             "${WINDOWS_ARTIFACT_ID}"             "${WINDOWS_ARTIFACT_DIGEST}"             "${windows_outer}"
+          download_artifact             "${LINUX_ARTIFACT_ID}"             "${LINUX_ARTIFACT_DIGEST}"             "${linux_outer}"
+
+          extract_single_file "${windows_outer}" "${WINDOWS_FILENAME}"
+          extract_single_file "${linux_outer}" "${LINUX_FILENAME}"
+
+          (
+            cd "${release_dir}"
+            sha256sum -- "${WINDOWS_FILENAME}" "${LINUX_FILENAME}"               > SHA256SUMS.txt
+          )
+
+          cat > "${work_dir}/release-notes.md" <<'EOF'
+          Experimental unsigned portable preview built from commit c12b1d6d568798e64720e39f06fa82832f79ac63.
+
+          - Windows: portable ZIP, not an installer
+          - Linux: portable TXZ
+          - Windows and Linux application builds passed
+          - Rust formatting, Clippy, and tests passed on Ubuntu and Windows
+          - C++ formatting passed
+
+          Security notice: these binaries are unsigned and have not been malware-scanned. Test them in Windows Sandbox or a virtual machine with disposable media before considering use on a primary PC. SHA256SUMS.txt contains hashes for the two release assets.
+          EOF
+
+          gh release create "${RELEASE_TAG}"             --repo "${GITHUB_REPOSITORY}"             --target "${TARGET_SHA}"             --title "MCP preview c12b1d6"             --notes-file "${work_dir}/release-notes.md"             --prerelease             --draft
+
+          gh release upload "${RELEASE_TAG}"             "${release_dir}/${WINDOWS_FILENAME}"             "${release_dir}/${LINUX_FILENAME}"             "${release_dir}/SHA256SUMS.txt"             --repo "${GITHUB_REPOSITORY}"             --clobber
+
+          draft_release="$(
+            gh api "${api_root#https://api.github.com/}/releases/tags/${RELEASE_TAG}"
+          )"
+          jq -e             --arg tag "${RELEASE_TAG}"             --arg sha "${TARGET_SHA}"             --arg windows "${WINDOWS_FILENAME}"             --arg linux "${LINUX_FILENAME}"             '
+              .tag_name == $tag
+              and .target_commitish == $sha
+              and .draft == true
+              and .prerelease == true
+              and ([.assets[].name] | sort)
+                == ([$windows, $linux, "SHA256SUMS.txt"] | sort)
+              and all(.assets[]; .state == "uploaded" and .size > 0)
+            ' <<<"${draft_release}" >/dev/null
+
+          release_id="$(jq -r '.id' <<<"${draft_release}")"
+          published_release="$(
+            gh api --method PATCH               "${api_root#https://api.github.com/}/releases/${release_id}"               -F draft=false               -F prerelease=true
+          )"
+          jq -e             --arg tag "${RELEASE_TAG}"             '
+              .tag_name == $tag
+              and .draft == false
+              and .prerelease == true
+              and ([.assets[] | select(.state == "uploaded" and .size > 0)] | length) == 3
+            ' <<<"${published_release}" >/dev/null
+
+          tag_ref="$(
+            gh api "${api_root#https://api.github.com/}/git/ref/tags/${RELEASE_TAG}"
+          )"
+          jq -e             --arg sha "${TARGET_SHA}"             '.object.type == "commit" and .object.sha == $sha'             <<<"${tag_ref}" >/dev/null
+
+          jq -r '.html_url, (.assets[].browser_download_url)'             <<<"${published_release}"
