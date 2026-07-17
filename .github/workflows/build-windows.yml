@@ -133,8 +133,10 @@ jobs:
             echo "Missing or empty Shotcut/shotcut-mcp.exe" >&2
             exit 1
           }
-          if ldd Shotcut/shotcut-mcp.exe 2>&1 | grep -q 'not found'; then
-            ldd Shotcut/shotcut-mcp.exe >&2
+          ldd_output="$(ldd Shotcut/shotcut-mcp.exe 2>&1 || true)"
+          if grep -q 'not found' <<<"$ldd_output"; then
+            printf '%s
+' "$ldd_output" >&2
             exit 1
           fi
           zip -gr shotcut-win64-$VERSION.zip Shotcut

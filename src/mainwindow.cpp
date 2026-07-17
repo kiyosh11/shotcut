@@ -248,7 +248,6 @@ MainWindow::MainWindow()
     onClipboardChanged();
     connect(QGuiApplication::clipboard(), SIGNAL(dataChanged()), this, SLOT(onClipboardChanged()));
 
-
     ProxyManager::removePending();
 
     for (auto &child : findChildren<QWidget *>()) {
