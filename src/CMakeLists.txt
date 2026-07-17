@@ -89,7 +89,7 @@ add_executable(shotcut WIN32 MACOSX_BUNDLE
   jobs/whisperjob.cpp jobs/whisperjob.h
   main.cpp
   localpath.h
-  mcpbridge.cpp mcpbridge.h mcpbridgepolicy.h
+  mcpbridge.cpp mcpbridge.h mcpbridgepolicy.h mcpkeyframeinterpolation.h
   mcpexporttargetpolicy.cpp mcpexporttargetpolicy.h
   mcpbridgecommands.cpp
   mcpbridgeedit.cpp

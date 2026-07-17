@@ -23,6 +23,7 @@
 #include <MltProducer.h>
 #include <MltService.h>
 #include <QString>
+#include <QStringList>
 #include <QUndoCommand>
 #include <QUuid>
 
@@ -174,6 +175,7 @@ private:
     QUuid m_producerUuid;
     Mlt::Properties m_before;
     Mlt::Properties m_after;
+    QStringList m_updatedProperties;
     FilterController *m_filterController;
     bool m_firstRedo;
 };

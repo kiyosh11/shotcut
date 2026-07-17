@@ -9,10 +9,12 @@
 
 #include "mcpbridge.h"
 
+#include "mcpkeyframeinterpolation.h"
 #include "mcpbridgepolicy.h"
 #include "mcpxmlpathvalidator.h"
 
 #include "Logger.h"
+#include "actions.h"
 #include "controllers/filtercontroller.h"
 #include "docks/encodedock.h"
 #include "docks/timelinedock.h"
@@ -29,21 +31,33 @@
 #include "settings.h"
 #include "shotcut_mlt_properties.h"
 
+#include <MltAnimation.h>
 #include <MltFilter.h>
 #include <MltProducer.h>
+#include <QAction>
+#include <QColor>
 #include <QCryptographicHash>
 #include <QDir>
+#include <QDockWidget>
 #include <QFileInfo>
+#include <QFont>
+#include <QFormLayout>
+#include <QFrame>
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <QLabel>
 #include <QLocalSocket>
 #include <QLockFile>
+#include <QMenu>
 #include <QScopedPointer>
 #include <QScopedValueRollback>
 #include <QUndoStack>
+#include <QVBoxLayout>
+#include <QWidget>
 
 namespace {
 constexpr qsizetype kMaximumMessageBytes = 16 * 1024 * 1024;
+constexpr int kBridgeProtocolVersion = 2;
 
 bool pathWithinRoot(const QString &candidatePath, const QString &rootPath)
 {
@@ -87,6 +101,20 @@ QString jobState(const AbstractJob &job)
         return QStringLiteral("failed");
     return QStringLiteral("completed");
 }
+
+QString profileColorspaceName(int colorspace)
+{
+    switch (colorspace) {
+    case 601:
+        return QStringLiteral("bt601");
+    case 709:
+        return QStringLiteral("bt709");
+    case 2020:
+        return QStringLiteral("bt2020");
+    default:
+        return QStringLiteral("unknown");
+    }
+}
 } // namespace
 
 McpBridge::RpcResult McpBridge::RpcResult::success(const QJsonValue &value)
@@ -128,6 +156,11 @@ McpBridge::McpBridge(MainWindow &window, QObject *parent)
         advanceRevision();
     });
     connect(&m_window, &MainWindow::producerOpened, this, [this](bool) { advanceRevision(); });
+    connect(&m_window, &MainWindow::profileChanged, this, [this]() { refreshAutomationDock(); });
+    connect(&m_window,
+            &QWidget::windowTitleChanged,
+            this,
+            [this](const QString &) { refreshAutomationDock(); });
 }
 
 void McpBridge::advanceRevision()
@@ -135,6 +168,7 @@ void McpBridge::advanceRevision()
     constexpr qint64 maximumExactJsonInteger = 9007199254740991LL;
     if (m_revision < maximumExactJsonInteger)
         ++m_revision;
+    refreshAutomationDock();
 }
 
 McpBridge::~McpBridge()
@@ -199,16 +233,155 @@ bool McpBridge::startFromEnvironment()
     }
     m_ownsEndpoint = true;
     LOG_INFO() << "MCP bridge listening on a same-user local socket";
+    setupAutomationDock();
     return true;
+}
+
+void McpBridge::setupAutomationDock()
+{
+    if (m_automationDock)
+        return;
+
+    m_automationDock = new QDockWidget(tr("AI Automation"), &m_window);
+    m_automationDock->setObjectName(QStringLiteral("McpAutomationDock"));
+    m_automationDock->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea);
+    m_automationDock->setMinimumWidth(300);
+
+    auto *content = new QWidget(m_automationDock);
+    auto *layout = new QVBoxLayout(content);
+    layout->setContentsMargins(14, 14, 14, 14);
+    layout->setSpacing(10);
+
+    auto *title = new QLabel(tr("Shotcut MCP"), content);
+    QFont titleFont = title->font();
+    titleFont.setBold(true);
+    title->setFont(titleFont);
+    layout->addWidget(title);
+
+    m_automationConnectionLabel = new QLabel(content);
+    m_automationConnectionLabel->setTextFormat(Qt::PlainText);
+    QFont connectionFont = m_automationConnectionLabel->font();
+    connectionFont.setBold(true);
+    m_automationConnectionLabel->setFont(connectionFont);
+    layout->addWidget(m_automationConnectionLabel);
+
+    auto *description = new QLabel(
+        tr("A local, authenticated AI client can inspect the live project and submit typed, "
+           "revision-checked edits. Timeline edits use Shotcut history; profile changes "
+           "explicitly report their required history reset."),
+        content);
+    description->setWordWrap(true);
+    layout->addWidget(description);
+
+    auto *rule = new QFrame(content);
+    rule->setFrameShape(QFrame::HLine);
+    rule->setFrameShadow(QFrame::Sunken);
+    layout->addWidget(rule);
+
+    auto *form = new QFormLayout;
+    form->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
+    m_automationProjectLabel = new QLabel(content);
+    m_automationProjectLabel->setTextFormat(Qt::PlainText);
+    m_automationProjectLabel->setTextInteractionFlags(Qt::TextSelectableByMouse
+                                                       | Qt::TextSelectableByKeyboard);
+    m_automationProjectLabel->setFocusPolicy(Qt::TabFocus);
+    m_automationProjectLabel->setWordWrap(true);
+    m_automationRevisionLabel = new QLabel(content);
+    m_automationRevisionLabel->setTextFormat(Qt::PlainText);
+    m_automationActivityLabel = new QLabel(content);
+    m_automationActivityLabel->setTextFormat(Qt::PlainText);
+    m_automationActivityLabel->setWordWrap(true);
+    form->addRow(tr("Project"), m_automationProjectLabel);
+    form->addRow(tr("Revision"), m_automationRevisionLabel);
+    form->addRow(tr("Last request"), m_automationActivityLabel);
+
+    auto *endpointLabel = new QLabel(content);
+    endpointLabel->setTextFormat(Qt::PlainText);
+    endpointLabel->setText(m_endpoint);
+    endpointLabel->setTextInteractionFlags(Qt::TextSelectableByMouse
+                                           | Qt::TextSelectableByKeyboard);
+    endpointLabel->setFocusPolicy(Qt::TabFocus);
+    endpointLabel->setWordWrap(true);
+    form->addRow(tr("Local endpoint"), endpointLabel);
+
+    auto *rootsLabel = new QLabel(content);
+    rootsLabel->setTextFormat(Qt::PlainText);
+    rootsLabel->setText(m_allowedRoots.isEmpty()
+                            ? tr("None - file access disabled")
+                            : m_allowedRoots.join(QLatin1Char('\n')));
+    rootsLabel->setTextInteractionFlags(Qt::TextSelectableByMouse
+                                        | Qt::TextSelectableByKeyboard);
+    rootsLabel->setFocusPolicy(Qt::TabFocus);
+    rootsLabel->setWordWrap(true);
+    form->addRow(tr("Allowed folders"), rootsLabel);
+    layout->addLayout(form);
+
+    auto *safety = new QLabel(
+        tr("The session token is never displayed. File access stays inside the allowed folders, "
+           "and the bridge does not expose a shell or arbitrary application actions."),
+        content);
+    safety->setWordWrap(true);
+    safety->setProperty("class", QStringLiteral("information"));
+    layout->addWidget(safety);
+    layout->addStretch();
+
+    m_automationDock->setWidget(content);
+    const bool layoutRestored = m_window.restoreDockWidget(m_automationDock);
+    if (!layoutRestored)
+        m_window.addDockWidget(Qt::RightDockWidgetArea, m_automationDock);
+    auto *toggleAction = m_automationDock->toggleViewAction();
+    Actions.add(QStringLiteral("mcpAutomationDockAction"), toggleAction, tr("View"));
+    const auto savedShortcuts = Settings.shortcuts(toggleAction->objectName());
+    if (!savedShortcuts.isEmpty())
+        Actions.overrideShortcuts(toggleAction->objectName(), savedShortcuts);
+    if (auto *viewMenu = m_window.findChild<QMenu *>(QStringLiteral("menuView")))
+        viewMenu->addAction(toggleAction);
+    if (!layoutRestored) {
+        m_automationDock->show();
+        m_automationDock->raise();
+    }
+    refreshAutomationDock();
+}
+
+void McpBridge::refreshAutomationDock(const QString &request, bool succeeded)
+{
+    if (!m_automationDock)
+        return;
+
+    if (m_automationConnectionLabel) {
+        m_automationConnectionLabel->setText(
+            tr("Bridge active - %n open local connection(s)",
+               nullptr,
+               static_cast<int>(m_buffers.size())));
+    }
+    if (m_automationProjectLabel) {
+        const QString path = m_window.fileName();
+        const QString display = path.isEmpty() ? tr("Untitled") : QFileInfo(path).fileName();
+        m_automationProjectLabel->setText(display);
+        m_automationProjectLabel->setToolTip(
+            QStringLiteral("<p>%1</p>").arg(path.toHtmlEscaped()));
+    }
+    if (m_automationRevisionLabel)
+        m_automationRevisionLabel->setText(QString::number(m_revision));
+    if (m_automationActivityLabel && !request.isEmpty()) {
+        const QString displayRequest = request.left(128);
+        m_automationActivityLabel->setText(
+            succeeded ? tr("%1 completed").arg(displayRequest)
+                      : tr("%1 failed").arg(displayRequest));
+    } else if (m_automationActivityLabel && m_automationActivityLabel->text().isEmpty()) {
+        m_automationActivityLabel->setText(tr("Waiting for a request"));
+    }
 }
 
 void McpBridge::onNewConnection()
 {
     while (auto *socket = m_server.nextPendingConnection()) {
         m_buffers.insert(socket, QByteArray());
+        refreshAutomationDock();
         connect(socket, &QLocalSocket::readyRead, this, [this, socket]() { onReadyRead(socket); });
         connect(socket, &QLocalSocket::disconnected, this, [this, socket]() {
             m_buffers.remove(socket);
+            refreshAutomationDock();
             socket->deleteLater();
         });
     }
@@ -278,6 +451,32 @@ void McpBridge::onReadyRead(QLocalSocket *socket)
         return;
     }
 
+    const auto protocolValue = params.take(QStringLiteral("bridge_protocol"));
+    const bool validProtocol = protocolValue.isDouble()
+                               && protocolValue.toDouble()
+                                      == static_cast<double>(protocolValue.toInt())
+                               && protocolValue.toInt() == kBridgeProtocolVersion;
+    if (!validProtocol) {
+        writeResponse(
+            socket,
+            QJsonObject{
+                {QStringLiteral("jsonrpc"), QStringLiteral("2.0")},
+                {QStringLiteral("id"), id},
+                {QStringLiteral("error"),
+                 QJsonObject{
+                     {QStringLiteral("code"), -32006},
+                     {QStringLiteral("message"),
+                      QStringLiteral("Incompatible Shotcut MCP bridge protocol")},
+                     {QStringLiteral("data"),
+                      QJsonObject{
+                          {QStringLiteral("expected"), kBridgeProtocolVersion},
+                          {QStringLiteral("received"), protocolValue},
+                      }},
+                 }},
+            });
+        return;
+    }
+
     if (m_busy) {
         const QJsonObject busyError{
             {QStringLiteral("code"), -32005},
@@ -291,7 +490,9 @@ void McpBridge::onReadyRead(QLocalSocket *socket)
     }
 
     QScopedValueRollback<bool> requestGuard(m_busy, true);
-    const auto result = dispatch(request.value(QStringLiteral("method")).toString(), params);
+    const QString method = request.value(QStringLiteral("method")).toString();
+    const auto result = dispatch(method, params);
+    refreshAutomationDock(method, result.ok);
     QJsonObject response{{QStringLiteral("jsonrpc"), QStringLiteral("2.0")},
                          {QStringLiteral("id"), id}};
     if (result.ok) {
@@ -308,7 +509,27 @@ void McpBridge::onReadyRead(QLocalSocket *socket)
 
 void McpBridge::writeResponse(QLocalSocket *socket, const QJsonObject &response)
 {
-    socket->write(QJsonDocument(response).toJson(QJsonDocument::Compact));
+    QJsonObject versionedResponse = response;
+    versionedResponse.insert(QStringLiteral("bridge_protocol"), kBridgeProtocolVersion);
+    QByteArray payload = QJsonDocument(versionedResponse).toJson(QJsonDocument::Compact);
+    if (payload.size() >= kMaximumMessageBytes) {
+        versionedResponse = QJsonObject{
+            {QStringLiteral("jsonrpc"), QStringLiteral("2.0")},
+            {QStringLiteral("id"), response.value(QStringLiteral("id"))},
+            {QStringLiteral("bridge_protocol"), kBridgeProtocolVersion},
+            {QStringLiteral("error"),
+             QJsonObject{
+                 {QStringLiteral("code"), -32007},
+                 {QStringLiteral("message"),
+                  QStringLiteral("Shotcut MCP response exceeds the bridge size limit")},
+                 {QStringLiteral("data"),
+                  QJsonObject{{QStringLiteral("maximum_bytes"),
+                               static_cast<double>(kMaximumMessageBytes)}}},
+             }},
+        };
+        payload = QJsonDocument(versionedResponse).toJson(QJsonDocument::Compact);
+    }
+    socket->write(payload);
     socket->write("\n");
     socket->flush();
     socket->disconnectFromServer();
@@ -320,10 +541,14 @@ McpBridge::RpcResult McpBridge::dispatch(const QString &method, QJsonObject para
         return RpcResult::success(editorStatus());
     if (method == QStringLiteral("project.snapshot"))
         return RpcResult::success(projectSnapshot());
+    if (method == QStringLiteral("editor.control"))
+        return controlEditor(params);
     if (method == QStringLiteral("project.open"))
         return openProject(params);
     if (method == QStringLiteral("project.save"))
         return saveProject(params);
+    if (method == QStringLiteral("project.set_profile"))
+        return setProjectProfile(params);
     if (method == QStringLiteral("timeline.apply"))
         return applyEditPlan(params);
     if (method == QStringLiteral("history.undo"))
@@ -365,6 +590,30 @@ QJsonObject McpBridge::editorStatus() const
         const QString id = metadata->uniqueId();
         if (id.isEmpty())
             continue;
+        QJsonArray keyframeParameters;
+        if (metadata->keyframes()) {
+            for (int parameterIndex = 0;
+                 parameterIndex < metadata->keyframes()->parameterCount();
+                 ++parameterIndex) {
+                const auto *parameter = metadata->keyframes()->parameter(parameterIndex);
+                if (!parameter)
+                    continue;
+                keyframeParameters.append(QJsonObject{
+                    {QStringLiteral("property"), parameter->property()},
+                    {QStringLiteral("name"), parameter->name()},
+                    {QStringLiteral("units"), parameter->units()},
+                    {QStringLiteral("minimum"), parameter->minimum()},
+                    {QStringLiteral("maximum"), parameter->maximum()},
+                    {QStringLiteral("range_type"),
+                     parameter->rangeType() == QmlKeyframesParameter::ClipLength
+                         ? QStringLiteral("clip_length")
+                         : QStringLiteral("min_max")},
+                    {QStringLiteral("allow_overshoot"),
+                     metadata->keyframes()->allowOvershoot()},
+                    {QStringLiteral("numeric"), !parameter->isRectangle() && !parameter->isColor()},
+                });
+            }
+        }
         filterCatalog.append(QJsonObject{
             {QStringLiteral("id"), id},
             {QStringLiteral("name"), metadata->name()},
@@ -375,12 +624,14 @@ QJsonObject McpBridge::editorStatus() const
             {QStringLiteral("needs_gpu"), metadata->needsGPU()},
             {QStringLiteral("gpu_compatible"), metadata->isGpuCompatible()},
             {QStringLiteral("keywords"), metadata->keywords()},
+            {QStringLiteral("keyframe_parameters"), keyframeParameters},
         });
     }
 
     return QJsonObject{
-        {QStringLiteral("bridge_protocol"), 1},
+        {QStringLiteral("bridge_protocol"), kBridgeProtocolVersion},
         {QStringLiteral("connected"), true},
+        {QStringLiteral("open_connections"), static_cast<int>(m_buffers.size())},
         {QStringLiteral("project_path"), m_window.fileName()},
         {QStringLiteral("modified"), m_window.isWindowModified()},
         {QStringLiteral("revision"), static_cast<double>(m_revision)},
@@ -432,6 +683,15 @@ QJsonObject McpBridge::projectSnapshot() const
 
             QJsonArray filters;
             Mlt::Producer producer = timeline->producerForClip(trackIndex, clipIndex);
+            int filterSourceIn = 0;
+            int filterSourceOut = -1;
+            int playlistStart = 0;
+            const bool hasFilterContext = filterClipContext(trackIndex,
+                                                            clipIndex,
+                                                            filterSourceIn,
+                                                            filterSourceOut,
+                                                            playlistStart);
+            Q_UNUSED(playlistStart)
             if (producer.is_valid() && !producer.is_blank()) {
                 AttachedFiltersModel attachedFilters;
                 attachedFilters.setProducer(&producer);
@@ -471,12 +731,106 @@ QJsonObject McpBridge::projectSnapshot() const
                         if (value.size() <= 4096)
                             parameters.insert(name, value);
                     }
+                    QJsonArray keyframes;
+                    QJsonObject keyframeRange;
+                    bool hasAnyAdvancedKeyframes = false;
+                    const int simpleAnimateIn = qMax(
+                        0,
+                        service->time_to_frames(service->get(kShotcutAnimInProperty)));
+                    const int simpleAnimateOut = qMax(
+                        0,
+                        service->time_to_frames(service->get(kShotcutAnimOutProperty)));
+                    if (metadata && actualIsFilter && isBundledFilterMetadata(metadata)
+                        && metadata->keyframes()) {
+                        int clipOffset = 0;
+                        int keyframeDuration = 0;
+                        if (hasFilterContext
+                            && filterKeyframeTiming(producer,
+                                                    *service,
+                                                    filterSourceIn,
+                                                    filterSourceOut,
+                                                    clipOffset,
+                                                    keyframeDuration)) {
+                            keyframeRange = QJsonObject{
+                                {QStringLiteral("start"), clipOffset},
+                                {QStringLiteral("end"), clipOffset + keyframeDuration - 1},
+                            };
+                        }
+                        for (int parameterIndex = 0;
+                             parameterIndex < metadata->keyframes()->parameterCount();
+                             ++parameterIndex) {
+                            const auto *parameter
+                                = metadata->keyframes()->parameter(parameterIndex);
+                            if (!parameter)
+                                continue;
+                            const QString property = parameter->property();
+                            if (keyframeDuration > 0
+                                && !service->get_animation(property.toUtf8().constData())) {
+                                service->anim_get_double(property.toUtf8().constData(),
+                                                         0,
+                                                         keyframeDuration);
+                            }
+                            Mlt::Animation animation(
+                                service->get_animation(property.toUtf8().constData()));
+                            if (animation.is_valid() && animation.key_count() > 0)
+                                hasAnyAdvancedKeyframes = true;
+                            if (parameter->isRectangle() || parameter->isColor())
+                                continue;
+                            if (!animation.is_valid() || animation.key_count() <= 0
+                                || keyframeDuration <= 0) {
+                                continue;
+                            }
+                            QJsonArray points;
+                            for (int keyIndex = 0; keyIndex < animation.key_count(); ++keyIndex) {
+                                const int frame = animation.key_get_frame(keyIndex);
+                                points.append(QJsonObject{
+                                    {QStringLiteral("position"), frame + clipOffset},
+                                    {QStringLiteral("value"),
+                                     service->anim_get_double(property.toUtf8().constData(),
+                                                              frame,
+                                                              keyframeDuration)},
+                                    {QStringLiteral("interpolation"),
+                                     McpKeyframeInterpolation::name(
+                                         animation.key_get_type(keyIndex))},
+                                });
+                            }
+                            double minimum = parameter->minimum();
+                            double maximum = parameter->maximum();
+                            if (parameter->rangeType() == QmlKeyframesParameter::ClipLength) {
+                                const int filterIn = filterSourceIn + clipOffset;
+                                minimum = 0.0;
+                                maximum = static_cast<double>(
+                                              qMax(0, producer.get_length() - filterIn))
+                                          / MLT.profile().fps();
+                            }
+                            keyframes.append(QJsonObject{
+                                {QStringLiteral("property"), property},
+                                {QStringLiteral("minimum"), minimum},
+                                {QStringLiteral("maximum"), maximum},
+                                {QStringLiteral("units"), parameter->units()},
+                                {QStringLiteral("allow_overshoot"),
+                                 metadata->keyframes()->allowOvershoot()},
+                                {QStringLiteral("points"), points},
+                            });
+                        }
+                    }
+                    QString keyframeMode = QStringLiteral("none");
+                    if (simpleAnimateIn > 0 || simpleAnimateOut > 0)
+                        keyframeMode = QStringLiteral("simple");
+                    else if (hasAnyAdvancedKeyframes)
+                        keyframeMode = QStringLiteral("advanced");
                     filters.append(QJsonObject{
                         {QStringLiteral("index"), filterIndex},
                         {QStringLiteral("id"), id},
                         {QStringLiteral("type"), serviceType},
                         {QStringLiteral("disabled"), service->get_int("disable") != 0},
                         {QStringLiteral("parameters"), parameters},
+                        {QStringLiteral("keyframe_range"), keyframeRange},
+                        {QStringLiteral("keyframe_mode"), keyframeMode},
+                        {QStringLiteral("simple_keyframes"),
+                         QJsonObject{{QStringLiteral("animate_in"), simpleAnimateIn},
+                                     {QStringLiteral("animate_out"), simpleAnimateOut}}},
+                        {QStringLiteral("keyframes"), keyframes},
                     });
                 }
             }
@@ -534,6 +888,25 @@ QJsonObject McpBridge::projectSnapshot() const
         });
     }
 
+    QJsonArray markers;
+    const auto markerItems = timeline->markersModel()->getMarkers();
+    for (int markerIndex = 0; markerIndex < markerItems.size(); ++markerIndex) {
+        const auto &marker = markerItems.at(markerIndex);
+        markers.append(QJsonObject{
+            {QStringLiteral("index"), markerIndex},
+            {QStringLiteral("text"), marker.text},
+            {QStringLiteral("start"), marker.start},
+            {QStringLiteral("end"), marker.end},
+            {QStringLiteral("color"), marker.color.name(QColor::HexRgb)},
+        });
+    }
+
+    QString dynamicRange = QStringLiteral("sdr");
+    if (MLT.colorTrc() == QStringLiteral("arib-std-b67"))
+        dynamicRange = QStringLiteral("hlg");
+    else if (MLT.colorTrc() == QStringLiteral("smpte2084"))
+        dynamicRange = QStringLiteral("pq");
+
     return QJsonObject{
         {QStringLiteral("revision"), static_cast<double>(m_revision)},
         {QStringLiteral("project_path"), m_window.fileName()},
@@ -542,12 +915,23 @@ QJsonObject McpBridge::projectSnapshot() const
         {QStringLiteral("current_track"), timeline->currentTrack()},
         {QStringLiteral("profile"),
          QJsonObject{{QStringLiteral("width"), MLT.profile().width()},
-                     {QStringLiteral("height"), MLT.profile().height()},
-                     {QStringLiteral("fps"), MLT.profile().fps()},
-                     {QStringLiteral("progressive"), MLT.profile().progressive() != 0}}},
+                      {QStringLiteral("height"), MLT.profile().height()},
+                      {QStringLiteral("fps"), MLT.profile().fps()},
+                      {QStringLiteral("frame_rate_num"), MLT.profile().frame_rate_num()},
+                      {QStringLiteral("frame_rate_den"), MLT.profile().frame_rate_den()},
+                      {QStringLiteral("display_aspect_num"), MLT.profile().display_aspect_num()},
+                      {QStringLiteral("display_aspect_den"), MLT.profile().display_aspect_den()},
+                      {QStringLiteral("sample_aspect_num"), MLT.profile().sample_aspect_num()},
+                      {QStringLiteral("sample_aspect_den"), MLT.profile().sample_aspect_den()},
+                      {QStringLiteral("colorspace"),
+                       profileColorspaceName(MLT.profile().colorspace())},
+                      {QStringLiteral("colorspace_code"), MLT.profile().colorspace()},
+                      {QStringLiteral("dynamic_range"), dynamicRange},
+                      {QStringLiteral("progressive"), MLT.profile().progressive() != 0}}},
         {QStringLiteral("selection"), selection},
         {QStringLiteral("tracks"), tracks},
         {QStringLiteral("subtitle_tracks"), subtitleTracks},
+        {QStringLiteral("markers"), markers},
     };
 }
 
@@ -615,6 +999,58 @@ bool McpBridge::bundledMltServiceAllowed(const QString &element,
         }
     }
     return false;
+}
+
+bool McpBridge::filterClipContext(int track,
+                                  int clip,
+                                  int &sourceIn,
+                                  int &sourceOut,
+                                  int &playlistStart) const
+{
+    auto *model = m_window.timelineDock()->model();
+    const auto info = model->getClipInfo(track, clip);
+    if (!info || !info->producer || !info->producer->is_valid())
+        return false;
+
+    sourceIn = info->frame_in;
+    sourceOut = info->frame_out;
+    playlistStart = info->start;
+    const auto previous = model->getClipInfo(track, clip - 1);
+    if (previous && previous->producer && previous->producer->is_valid()
+        && previous->producer->get(kShotcutTransitionProperty)) {
+        sourceIn -= previous->frame_count;
+        playlistStart = previous->start;
+    }
+    const auto next = model->getClipInfo(track, clip + 1);
+    if (next && next->producer && next->producer->is_valid()
+        && next->producer->get(kShotcutTransitionProperty)) {
+        sourceOut += next->frame_count;
+    }
+    return sourceOut >= sourceIn;
+}
+
+bool McpBridge::filterKeyframeTiming(Mlt::Producer &producer,
+                                     Mlt::Service &service,
+                                     int sourceIn,
+                                     int sourceOut,
+                                     int &clipOffset,
+                                     int &duration) const
+{
+    if (!producer.is_valid() || !service.is_valid() || sourceOut < sourceIn)
+        return false;
+
+    int filterIn = service.get_int("in");
+    int filterOut = service.get_int("out");
+    if (service.type() == mlt_service_link_type || (filterIn == 0 && filterOut == 0)) {
+        filterIn = sourceIn;
+        filterOut = sourceOut;
+    }
+    if (filterIn < 0 || filterOut < filterIn)
+        return false;
+
+    clipOffset = filterIn - sourceIn;
+    duration = filterOut - filterIn + 1;
+    return duration > 0;
 }
 
 bool McpBridge::resolveEditableAttachedFilter(const AttachedFiltersModel &attachedFilters,
@@ -697,7 +1133,7 @@ bool McpBridge::validateClipFilterAddition(QmlMetadata *metadata,
                                            Mlt::Producer &producer,
                                            QString &error) const
 {
-    if (!metadata || !producer.is_valid()) {
+    if (!metadata || !producer.is_valid() || producer.is_blank()) {
         error = QStringLiteral("clip filter or target producer is unavailable");
         return false;
     }
@@ -936,8 +1372,6 @@ void McpBridge::loadAllowedRoots()
     m_allowedRoots.clear();
     auto configured = qEnvironmentVariable("SHOTCUT_MCP_ALLOWED_ROOTS")
                           .split(QDir::listSeparator(), Qt::SkipEmptyParts);
-    if (configured.isEmpty())
-        configured.append(QDir::homePath());
 
     for (const auto &root : configured) {
         QFileInfo info(root);

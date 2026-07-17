@@ -4,18 +4,25 @@ This directory contains a pure-Rust [Model Context Protocol](https://modelcontex
 
 The Rust server communicates over standard input/output with the MCP client and over a separate authenticated local socket with Shotcut. Shotcut remains responsible for media decoding, its timeline model, undo history, filters, subtitles, project files, and export jobs.
 
+Tool results use MCP `structuredContent`; the accompanying text stays intentionally small so a
+large timeline snapshot is not serialized twice.
+
 ## Capabilities
 
 The server exposes these MCP tools:
 
-- editor_status and project_snapshot inspect the live editor, timeline, clips, bundled clip-filter catalog, attached filters, subtitles, selection, export presets, and undo revision.
+- editor_status and project_snapshot inspect the live editor, timeline, clips, bundled clip-filter catalog, attached filters and numeric keyframes, markers, subtitles, selection, exact project profile, export presets, and undo revision.
+- control_editor provides typed play, pause, stop, absolute/relative seek, clip selection, track selection, and selection clearing without exposing arbitrary application actions.
 - open_project and save_project load and save Shotcut .mlt or .xml projects.
+- set_project_profile applies request-provided dimensions, rational frame rate, display aspect, colorspace, and SDR/HLG/PQ mode. This supports horizontal, square, and vertical projects without a hardcoded profile list.
 - apply_edit_plan validates or applies up to 500 typed operations as one undoable transaction.
 - undo and redo use Shotcut's native history.
 - export_video queues an export through Shotcut's job queue using MCP-safe defaults or an advertised preset that passes final consumer policy.
 - export_status reports queued, running, completed, and failed exports.
 
-Typed edit operations cover tracks, media insertion, clip moves/trims/splits/removal, clip gain and fades, transitions, track state, filters, and subtitle tracks/items. The edit_full_video prompt guides an AI through a complete inspect, plan, dry-run, apply, save, and export workflow.
+Typed edit operations cover tracks, media insertion, clip moves/trims/splits/removal, constant clip speed with optional pitch preservation and ripple, clip gain and fades, transitions, track state, marker creation/editing/removal, filter addition/removal/enable state/parameters/numeric keyframes, and subtitle tracks/items. These primitives compose production overlays, titles, numeric animated effects, audio processing, captions, and vertical edits while retaining Shotcut's native history. The edit_full_video prompt guides an AI through a complete inspect, plan, dry-run, apply, save, and export workflow.
+
+When the bridge is enabled, Shotcut adds an **AI Automation** dock. It shows the live project, revision, local endpoint, allowed folders, open local connection count, and last request. It never displays the session token. The dock is also available from the View menu and the keyboard-shortcut registry.
 
 ## Safety model
 
@@ -34,6 +41,8 @@ The bridge is disabled unless SHOTCUT_MCP_ENABLE=1. When enabled it:
 This is powerful editor access. Use a fresh token for each session, keep write approvals enabled, and restrict allowed roots to the media directories needed for the job.
 
 MCP project opening and export are deliberately noninteractive. Projects that require repair, missing-file relinking, processing-mode conversion, or auto-save recovery must be handled in Shotcut first. Export likewise returns an error when media is missing or a filter analysis is pending; complete the analysis in Shotcut and retry.
+
+Project profile changes are also deliberately explicit. Shotcut must reload the in-memory project under the new frame geometry, so incompatible undo/redo history cannot be retained. The tool reports this and requires `clear_undo_history: true` whenever history exists. Dimensions, exact frame rate, scan mode, colorspace, and dynamic range are all mandatory request values; omitted display aspect is derived from those dimensions using square pixels. No machine path, preset name, model, token, or project value is compiled into the feature.
 
 MCP intentionally rejects non-null writes to the `html` and `resource` properties of `richText` and `qtext` filters because embedded markup can load external files. Use plain `argument` and styling properties, or insert pre-rendered media from an allowed root.
 
@@ -59,7 +68,7 @@ Optional variables:
 | SHOTCUT_MCP_TIMEOUT_SECONDS | Rust server | Per-request timeout; defaults to 300 seconds. |
 | SHOTCUT_MCP_ALLOWED_ROOTS | Shotcut | Existing root directories allowed for media and project I/O. Uses ; on Windows and : on Unix. |
 
-If allowed roots are omitted, Shotcut permits the current user's home directory. An output file does not need to exist, but its parent directory must already exist inside an allowed root.
+If allowed roots are omitted or none resolve to existing directories, project/media/save/export file access is disabled. An output file does not need to exist, but its parent directory must already exist inside an explicitly configured allowed root.
 
 ## Build and install
 
@@ -97,17 +106,18 @@ A capable AI should:
 
 1. Call editor_status and project_snapshot.
 2. Confirm the source paths and creative brief.
-3. Submit apply_edit_plan with the current revision and dry_run=true.
-4. Ask for write approval, then send the same plan with dry_run=false.
+3. Submit apply_edit_plan with the current revision and dry_run=true. Stage dry runs when
+   operations depend on state created by earlier operations.
+4. Ask for write approval, then send the real plan with dry_run=false.
 5. Re-inspect the timeline and correct issues using another revision-checked plan.
 6. Save explicitly.
 7. Export only after explicit approval, then poll export_status.
 
-All edit indices are validated against the current snapshot. Structural changes that create, move, split, or remove indexed objects must be staged: apply them, then read a new snapshot before planning the next stage. Before applying a plan, resolve any existing redo history in Shotcut; the bridge refuses to destroy it.
+Real edit plans resolve indices and validate each operation against the result of the preceding operation, then apply the complete plan as one native undo transaction. A dry run never mutates the project to simulate those intermediate states; therefore, an operation that can invalidate validation of following operations must be last in a dry-run request. Validate dependent workflows in stages against fresh snapshots, then submit the intended sequential real plan. Before applying a plan, resolve any existing redo history in Shotcut; the bridge refuses to destroy it.
 
 Video tracks occupy the logical indexes before audio tracks. An explicit track insertion index must stay within that kind's region. When `index` is omitted, Shotcut adds a video track at the top or an audio track at the end.
 
-Filter operations use IDs from the bundled filter catalog returned by editor_status. Media analysis, transcription, or generative assets can be performed by other approved MCP tools, then inserted through this server as files under an allowed root.
+Filter operations use IDs from the bundled filter catalog returned by editor_status. The catalog reports editable bundled numeric keyframe properties and their fixed or clip-derived metadata ranges. For editable bundled filters, project_snapshot reports keyframe mode, active range, and numeric points in clip-relative frames, including the exact native name for all 35 Shotcut interpolation types. Numeric MCP keyframe edits use Shotcut's advanced mode and reject a filter still using simple animate-in/out keyframes instead of silently changing modes. Supply an interpolation when creating a keyframe; omit it when changing only an existing point's value to preserve Shotcut's exact native easing type. The broad `hold`, `smooth`, and `ease_*` names remain convenience aliases for discrete, smooth-natural, and cubic easing. Media analysis, transcription, or generative assets can be performed by other approved MCP tools, then inserted through this server as files under an allowed root.
 
 ## Development status
 

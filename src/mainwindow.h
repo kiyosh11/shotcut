@@ -108,6 +108,7 @@ public:
     QAction *actionAddCustomProfile() const;
     QAction *actionProfileRemove() const;
     QActionGroup *profileGroup() const { return m_profileGroup; }
+    void setVideoModeMenu();
     void buildVideoModeMenu(QMenu *topMenu,
                             QMenu *&customMenu,
                             QActionGroup *group,
@@ -196,7 +197,6 @@ private:
     void setProcessingMode(ShotcutSettings::ProcessingMode mode);
     void showSaveError();
     void setPreviewScale(int scale);
-    void setVideoModeMenu();
     void resetVideoModeMenu();
     void resetDockCorners();
     void showIncompatibleProjectMessage(const QString &shotcutVersion);

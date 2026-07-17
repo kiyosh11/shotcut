@@ -22,9 +22,12 @@
 
 namespace Mlt {
 class Producer;
+class Service;
 }
 class AttachedFiltersModel;
 class MainWindow;
+class QDockWidget;
+class QLabel;
 class QLocalSocket;
 class QLockFile;
 class QmlMetadata;
@@ -67,6 +70,8 @@ private:
 
     RpcResult openProject(const QJsonObject &params);
     RpcResult saveProject(const QJsonObject &params);
+    RpcResult setProjectProfile(const QJsonObject &params);
+    RpcResult controlEditor(const QJsonObject &params);
     RpcResult applyEditPlan(const QJsonObject &params);
     RpcResult changeHistory(const QJsonObject &params, bool redo);
     RpcResult startExport(const QJsonObject &params);
@@ -76,9 +81,21 @@ private:
     bool applyOperation(const QJsonObject &operation, QString &error);
     bool applyTimelineOperation(const QJsonObject &operation, QString &error);
     bool applyFilterOperation(const QJsonObject &operation, QString &error);
+    bool applyMarkerOperation(const QJsonObject &operation, QString &error);
     bool applySubtitleOperation(const QJsonObject &operation, QString &error);
     bool applyFilterParameters(
         int track, int clip, int filterIndex, const QJsonObject &parameters, QString &error);
+    bool filterClipContext(int track,
+                           int clip,
+                           int &sourceIn,
+                           int &sourceOut,
+                           int &playlistStart) const;
+    bool filterKeyframeTiming(Mlt::Producer &producer,
+                              Mlt::Service &service,
+                              int sourceIn,
+                              int sourceOut,
+                              int &clipOffset,
+                              int &duration) const;
     bool checkRevision(const QJsonObject &params, QString &error) const;
     bool trackExists(int track) const;
     bool clipExists(int track, int clip) const;
@@ -107,6 +124,8 @@ private:
     bool validateMediaResourcePaths(const QString &path, QString &error) const;
     void loadAllowedRoots();
     void advanceRevision();
+    void setupAutomationDock();
+    void refreshAutomationDock(const QString &request = QString(), bool succeeded = true);
 
     MainWindow &m_window;
     QLocalServer m_server;
@@ -118,6 +137,11 @@ private:
     qint64 m_revision{1};
     bool m_busy{false};
     bool m_ownsEndpoint{false};
+    QDockWidget *m_automationDock{nullptr};
+    QLabel *m_automationConnectionLabel{nullptr};
+    QLabel *m_automationProjectLabel{nullptr};
+    QLabel *m_automationRevisionLabel{nullptr};
+    QLabel *m_automationActivityLabel{nullptr};
 };
 
 #endif // MCPBRIDGE_H
