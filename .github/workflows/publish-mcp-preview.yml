@@ -136,10 +136,20 @@ jobs:
           verify_tag_state
 
           existing_draft_id=''
-          release_status="$(api_status "${api_root}/releases/tags/${RELEASE_TAG}")"
-          case "${release_status}" in
-            200)
-              existing_release="$(fetch_api "${api_root}/releases/tags/${RELEASE_TAG}")"
+          release_pages="$(
+            gh api --paginate --slurp \
+              "${api_path}/releases?per_page=100"
+          )"
+          matching_releases="$(
+            jq --arg tag "${RELEASE_TAG}" \
+              '[.[][] | select(.tag_name == $tag)]' \
+              <<<"${release_pages}"
+          )"
+          matching_release_count="$(jq 'length' <<<"${matching_releases}")"
+          case "${matching_release_count}" in
+            0) ;;
+            1)
+              existing_release="$(jq '.[0]' <<<"${matching_releases}")"
               validate_release_identity "${existing_release}"
               if [[ "$(jq -r '.draft' <<<"${existing_release}")" == "false" ]]; then
                 if [[ "${tag_present}" != "true" ]]; then
@@ -147,16 +157,16 @@ jobs:
                   exit 1
                 fi
                 validate_exact_assets "${existing_release}"
-                jq -r '.html_url, (.assets[].browser_download_url)'                   <<<"${existing_release}"
+                jq -r '.html_url, (.assets[].browser_download_url)' \
+                  <<<"${existing_release}"
                 exit 0
               fi
               jq -e '.draft == true' <<<"${existing_release}" >/dev/null
               validate_draft_assets "${existing_release}"
               existing_draft_id="$(jq -r '.id' <<<"${existing_release}")"
               ;;
-            404) ;;
             *)
-              echo "Unexpected HTTP status ${release_status} while checking release." >&2
+              echo "Expected at most one release for ${RELEASE_TAG}, found ${matching_release_count}." >&2
               exit 1
               ;;
           esac
@@ -245,11 +255,31 @@ jobs:
           Security notice: these binaries are unsigned and have not been malware-scanned. Test them in Windows Sandbox or a virtual machine with disposable media before considering use on a primary PC. SHA256SUMS.txt contains hashes for the two release assets.
           EOF
 
-          gh release create "${RELEASE_TAG}"             --repo "${GITHUB_REPOSITORY}"             --target "${TARGET_SHA}"             --title "${RELEASE_TITLE}"             --notes-file "${work_dir}/release-notes.md"             --prerelease             --draft
+          draft_release="$(
+            gh api --method POST "${api_path}/releases" \
+              --raw-field tag_name="${RELEASE_TAG}" \
+              --raw-field target_commitish="${TARGET_SHA}" \
+              --raw-field name="${RELEASE_TITLE}" \
+              --raw-field body="$(<"${work_dir}/release-notes.md")" \
+              --field draft=true \
+              --field prerelease=true
+          )"
+          validate_release_identity "${draft_release}"
+          jq -e '.draft == true' <<<"${draft_release}" >/dev/null
+          release_id="$(jq -r '.id | select(type == "number")' <<<"${draft_release}")"
+          if [[ -z "${release_id}" ]]; then
+            echo "Draft release creation did not return a numeric ID." >&2
+            exit 1
+          fi
 
-          gh release upload "${RELEASE_TAG}"             "${release_dir}/${WINDOWS_FILENAME}"             "${release_dir}/${LINUX_FILENAME}"             "${release_dir}/SHA256SUMS.txt"             --repo "${GITHUB_REPOSITORY}"             --clobber
+          gh release upload "${RELEASE_TAG}" \
+            "${release_dir}/${WINDOWS_FILENAME}" \
+            "${release_dir}/${LINUX_FILENAME}" \
+            "${release_dir}/SHA256SUMS.txt" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --clobber
 
-          draft_release="$(fetch_api "${api_root}/releases/tags/${RELEASE_TAG}")"
+          draft_release="$(fetch_api "${api_root}/releases/${release_id}")"
           validate_release_identity "${draft_release}"
           jq -e '.draft == true' <<<"${draft_release}" >/dev/null
           validate_exact_assets "${draft_release}"
