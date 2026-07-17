@@ -216,6 +216,7 @@ function Invoke-ShotcutSmoke([ValidateSet('d3d11', 'opengl')] [string] $Backend)
     $stdoutPath = Join-Path $runRoot 'stdout.txt'
     $stderrPath = Join-Path $runRoot 'stderr.txt'
     $thumbnailDir = Join-Path $appData 'thumbnails'
+    $minimumThumbnailCount = 3
     New-Item -ItemType Directory -Force -Path $runRoot, $appData, $roaming, $local |
         Out-Null
 
@@ -368,18 +369,25 @@ function Invoke-ShotcutSmoke([ValidateSet('d3d11', 'opengl')] [string] $Backend)
             }
         }
 
-        # Four cached thumbnails proves multiple Glaxnimate/MLT jobs ran.
+        # Three cached thumbnails and matching task logs prove that multiple
+        # Glaxnimate/MLT jobs ran; this is the complete visible batch at startup.
         $thumbnailDeadline = [DateTime]::UtcNow.AddSeconds(90)
         while (
             [DateTime]::UtcNow -lt $thumbnailDeadline -and
-            (Get-ThumbnailCount $thumbnailDir) -lt 4
+            (Get-ThumbnailCount $thumbnailDir) -lt $minimumThumbnailCount
         ) {
             Assert-Running $process 'Elements thumbnail generation'
             Start-Sleep -Milliseconds 500
         }
         $thumbnailCount = Get-ThumbnailCount $thumbnailDir
-        if ($thumbnailCount -lt 4) {
-            throw "Elements path was not exercised: only $thumbnailCount thumbnails generated"
+        if ($thumbnailCount -lt $minimumThumbnailCount) {
+            throw "Elements path was not exercised: only $thumbnailCount thumbnails generated; expected at least $minimumThumbnailCount"
+        }
+        $thumbnailTaskCount = @(
+            Select-String -LiteralPath $appLog -SimpleMatch 'ElementsThumbnailTask::run'
+        ).Count
+        if ($thumbnailTaskCount -lt $minimumThumbnailCount) {
+            throw "Elements task log was not exercised: only $thumbnailTaskCount tasks logged; expected at least $minimumThumbnailCount"
         }
 
         # Catch delayed access violations or hangs after thumbnail startup.
