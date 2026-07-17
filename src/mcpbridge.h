@@ -34,12 +34,13 @@ class McpBridge : public QObject
     Q_OBJECT
 
 public:
-    explicit McpBridge(MainWindow &window, QObject *parent = nullptr);
+    static std::unique_ptr<McpBridge> createFromEnvironment(MainWindow &window);
     ~McpBridge() override;
 
+private:
+    explicit McpBridge(MainWindow &window, QObject *parent = nullptr);
     bool startFromEnvironment();
 
-private:
     struct RpcResult
     {
         bool ok{false};

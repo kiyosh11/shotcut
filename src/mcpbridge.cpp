@@ -108,6 +108,17 @@ McpBridge::RpcResult McpBridge::RpcResult::failure(int code,
     return result;
 }
 
+std::unique_ptr<McpBridge> McpBridge::createFromEnvironment(MainWindow &window)
+{
+    if (qEnvironmentVariableIntValue("SHOTCUT_MCP_ENABLE") != 1)
+        return {};
+
+    std::unique_ptr<McpBridge> bridge(new McpBridge(window));
+    if (!bridge->startFromEnvironment())
+        return {};
+    return bridge;
+}
+
 McpBridge::McpBridge(MainWindow &window, QObject *parent)
     : QObject(parent)
     , m_window(window)
@@ -139,9 +150,6 @@ McpBridge::~McpBridge()
 
 bool McpBridge::startFromEnvironment()
 {
-    if (qEnvironmentVariableIntValue("SHOTCUT_MCP_ENABLE") != 1)
-        return false;
-
     m_token = qgetenv("SHOTCUT_MCP_TOKEN");
     if (m_token.size() < 32) {
         LOG_WARNING() << "MCP bridge disabled: SHOTCUT_MCP_TOKEN must be at least 32 characters";

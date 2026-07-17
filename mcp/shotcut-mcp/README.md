@@ -81,6 +81,8 @@ cmake --install /path/to/build
 
 The custom CMake target builds into `<build>/mcp-target/release`. Installation places the sidecar beside the Shotcut executable on Windows, in the application bundle on macOS, or in the configured binary directory on Unix.
 
+The repository's Windows portable workflow enables this target with a pinned GNU-host Rust toolchain. It rejects a package unless the sidecar is nonempty and appears exactly once in the ZIP. Including the sidecar does not enable editor control: SHOTCUT_MCP_ENABLE=1, a fresh token, allowed roots, and explicit MCP client registration are still required.
+
 ## MCP client configuration
 
 Copy [codex.example.toml](codex.example.toml) into the relevant part of your user or project Codex configuration and replace the command with the absolute path to the custom `shotcut-mcp` binary produced from this fork. Official Shotcut binaries do not include the local MCP bridge and cannot be used as a substitute.
@@ -109,4 +111,4 @@ Filter operations use IDs from the bundled filter catalog returned by editor_sta
 
 ## Development status
 
-GitHub Actions checks Rust formatting, Clippy warnings, and tests against the committed lockfile and pinned toolchain. The optional CMake target provides a reproducible build/install path without installing toolchains. Full Shotcut bridge, timeline, save, and export behavior still requires platform-specific integration and runtime testing before distribution.
+GitHub Actions checks Rust formatting, Clippy warnings, and tests against the committed lockfile and pinned toolchain. The optional CMake target provides a reproducible build/install path without installing toolchains. The Windows portable workflow also launches the freshly extracted ZIP with isolated settings, exercises Elements thumbnail generation through software-rendered D3D11 and OpenGL, and rejects crashes or hangs before artifact upload. Timeline, save, export, and model-driven editing still require broader platform-specific integration testing.

@@ -42,6 +42,7 @@ SHOTCUT_REVISION=
 # Repository URL or local checkout path used for the Shotcut source.
 SHOTCUT_REPO="https://github.com/mltframework/shotcut.git"
 SHOTCUT_VERSION=$(date '+%y.%-m.%-d')
+SHOTCUT_BUILD_MCP_SERVER=0
 ENABLE_BIGSH0T=1
 BIGSH0T_HEAD=0
 BIGSH0T_REVISION="710e734512b8975722f0c41f793f28c51a3d2b88"
@@ -624,6 +625,9 @@ function set_globals {
   #####
   # shotcut
   CONFIG[4]="cmake -G Ninja -D CMAKE_INSTALL_PREFIX=$FINAL_INSTALL_DIR -DCMAKE_PREFIX_PATH=$QTDIR -D SHOTCUT_VERSION=$SHOTCUT_VERSION $CMAKE_DEBUG_FLAG"
+  if [ "$SHOTCUT_BUILD_MCP_SERVER" = "1" ]; then
+    CONFIG[4]="${CONFIG[4]} -D SHOTCUT_BUILD_MCP_SERVER=ON"
+  fi
   CFLAGS_[4]="$ASAN_CFLAGS $CFLAGS"
   LDFLAGS_[4]="$ASAN_LDFLAGS $LDFLAGS"
   BUILD[4]="ninja -j $MAKEJ"

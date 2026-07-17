@@ -572,10 +572,10 @@ int main(int argc, char **argv)
             a.mainWindow->open(a.mainWindow->untitledFileName());
         }
 
-        McpBridge mcpBridge(*a.mainWindow);
-        mcpBridge.startFromEnvironment();
-
-        result = a.exec();
+        {
+            auto mcpBridge = McpBridge::createFromEnvironment(*a.mainWindow);
+            result = a.exec();
+        }
 
         if (EXIT_RESTART == result || EXIT_RESET == result) {
             LOG_DEBUG() << "restarting app";

@@ -6,10 +6,14 @@ on:
     # nightly
     - cron: '0 8 * * *'
 
+permissions:
+  contents: read
+
 jobs:
   build:
     if: ${{ github.event_name == 'workflow_dispatch' || github.repository_owner == 'mltframework' }}
     runs-on: windows-latest
+    timeout-minutes: 90
     outputs:
       version: ${{ steps.set_version.outputs.version }}
 
@@ -24,7 +28,7 @@ jobs:
           msystem: MINGW64
           update: true
           install: >-
-            autotools base-devel bzip2 coreutils git gzip tar xz zip
+            autotools base-devel bzip2 coreutils git gzip tar unzip xz zip
             perl-List-MoreUtils perl-XML-Parser
             mingw-w64-x86_64-toolchain
             mingw-w64-x86_64-cmake
@@ -77,6 +81,12 @@ jobs:
             mingw-w64-x86_64-x265
             mingw-w64-x86_64-zimg
 
+      - name: Install pinned GNU Rust toolchain
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: 1.97.0-x86_64-pc-windows-gnu
+          components: rustfmt, clippy
+
       - name: Set version
         id: set_version
         shell: msys2 {0}
@@ -101,19 +111,56 @@ jobs:
       - name: Build
         shell: msys2 {0}
         run: |
+          export PATH="$(cygpath -u "$USERPROFILE")/.cargo/bin:$PATH"
+          export RUSTUP_TOOLCHAIN=1.97.0-x86_64-pc-windows-gnu
+          command -v cargo >/dev/null
+          command -v rustc >/dev/null
+          test "$(rustc -vV | sed -n 's/^host: //p')" = x86_64-pc-windows-gnu
           echo INSTALL_DIR=\"$(pwd)/build\"
           echo INSTALL_DIR=\"$(pwd)/build\" > build-shotcut.conf
           echo SHOTCUT_VERSION=\"$VERSION\" >> build-shotcut.conf
           echo SHOTCUT_HEAD=0 >> build-shotcut.conf
           echo SHOTCUT_REPO=$PWD >> build-shotcut.conf
           echo SHOTCUT_REVISION=$GITHUB_SHA >> build-shotcut.conf
+          echo SHOTCUT_BUILD_MCP_SERVER=1 >> build-shotcut.conf
           bash scripts/build-shotcut-msys2.sh
 
       - name: Package the portable zip
         shell: msys2 {0}
         run: |
           cd build
+          test -s Shotcut/shotcut-mcp.exe || {
+            echo "Missing or empty Shotcut/shotcut-mcp.exe" >&2
+            exit 1
+          }
+          if ldd Shotcut/shotcut-mcp.exe 2>&1 | grep -q 'not found'; then
+            ldd Shotcut/shotcut-mcp.exe >&2
+            exit 1
+          fi
           zip -gr shotcut-win64-$VERSION.zip Shotcut
+          member_count="$(unzip -Z1 "shotcut-win64-$VERSION.zip" |
+            grep -Fxc 'Shotcut/shotcut-mcp.exe' || true)"
+          test "$member_count" -eq 1 || {
+            echo "Expected exactly one Shotcut/shotcut-mcp.exe in ZIP; found $member_count" >&2
+            exit 1
+          }
+
+      - name: Smoke test extracted Windows portable
+        id: windows_smoke
+        shell: pwsh
+        env:
+          SHOTCUT_ZIP: ${{ github.workspace }}\build\shotcut-win64-${{ steps.set_version.outputs.version }}.zip
+        run: .\.github\scripts\smoke-windows-portable.ps1 -Archive $env:SHOTCUT_ZIP
+
+      - name: Upload Windows smoke diagnostics
+        if: ${{ failure() && steps.windows_smoke.outcome == 'failure' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-gui-smoke-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}\shotcut-windows-smoke\diagnostics
+          if-no-files-found: warn
+          include-hidden-files: true
+          retention-days: 14
 
       - name: Upload portable artifact
         uses: actions/upload-artifact@v7
