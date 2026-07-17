@@ -1,0 +1,235 @@
+name: Publish repaired Windows preview 4d987e3
+
+on:
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: publish-windows-preview-4d987e3
+  cancel-in-progress: false
+
+env:
+  EXPECTED_REPOSITORY: kiyosh11/shotcut
+  EXPECTED_BRANCH: agent/fix-windows-startup-mcp-package
+  RUN_ID: "29603864760"
+  EXPECTED_SHA: 4d987e3a32387972bc4a2bdf7bbf1fa814f7fdee
+  EXPECTED_WORKFLOW: .github/workflows/build-windows.yml
+  ARTIFACT_NAME: windows-x64-portable
+  EXPECTED_ARTIFACT_ID: "8417645139"
+  EXPECTED_ARTIFACT_SIZE: "224923755"
+  EXPECTED_ARTIFACT_DIGEST: sha256:69732bc5428e6a6ddbe8a98868dffe5f0dbe806ebede2979f7945c3667e8fcc8
+  ASSET_NAME: shotcut-win64-26.7.17.zip
+  TAG: mcp-preview-4d987e3
+  RELEASE_TITLE: MCP preview 4d987e3 - Windows repaired
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Validate source run and artifact identity
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -Eeuo pipefail
+          test "$GITHUB_REPOSITORY" = "$EXPECTED_REPOSITORY"
+          test "$GITHUB_REF" = "refs/heads/master"
+
+          run_json="$(gh api "repos/$EXPECTED_REPOSITORY/actions/runs/$RUN_ID")"
+          jq -e \
+            --arg repo "$EXPECTED_REPOSITORY" \
+            --arg branch "$EXPECTED_BRANCH" \
+            --arg sha "$EXPECTED_SHA" \
+            --arg path "$EXPECTED_WORKFLOW" \
+            --argjson id "$RUN_ID" '
+              .id == $id and
+              .repository.full_name == $repo and
+              .head_repository.full_name == $repo and
+              .head_branch == $branch and
+              .status == "completed" and
+              .conclusion == "success" and
+              .head_sha == $sha and
+              .path == $path and
+              .event == "workflow_dispatch" and
+              .run_attempt == 1
+            ' <<<"$run_json" >/dev/null
+
+          artifacts_json="$(gh api "repos/$EXPECTED_REPOSITORY/actions/runs/$RUN_ID/artifacts?per_page=100")"
+          test "$(jq --arg name "$ARTIFACT_NAME" '[.artifacts[] | select(.name == $name)] | length' <<<"$artifacts_json")" -eq 1
+          jq -e \
+            --arg name "$ARTIFACT_NAME" \
+            --arg digest "$EXPECTED_ARTIFACT_DIGEST" \
+            --arg sha "$EXPECTED_SHA" \
+            --argjson artifact_id "$EXPECTED_ARTIFACT_ID" \
+            --argjson artifact_size "$EXPECTED_ARTIFACT_SIZE" \
+            --argjson run_id "$RUN_ID" '
+              .artifacts[] |
+              select(.name == $name) |
+              .id == $artifact_id and
+              .expired == false and
+              .size_in_bytes == $artifact_size and
+              .digest == $digest and
+              .workflow_run.id == $run_id and
+              .workflow_run.head_sha == $sha
+            ' <<<"$artifacts_json" >/dev/null
+
+      - name: Download exact artifact onto GitHub runner
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
+        with:
+          name: ${{ env.ARTIFACT_NAME }}
+          run-id: ${{ env.RUN_ID }}
+          repository: ${{ env.EXPECTED_REPOSITORY }}
+          github-token: ${{ github.token }}
+          path: dist
+
+      - name: Validate package and generate checksum
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          mapfile -d '' entries < <(find dist -mindepth 1 -maxdepth 1 -print0)
+          test "${#entries[@]}" -eq 1
+          asset="dist/$ASSET_NAME"
+          test -f "$asset"
+          test ! -L "$asset"
+          test "$(stat -c '%s' "$asset")" -gt 0
+          unzip -tq "$asset"
+          test "$(unzip -Z1 "$asset" | grep -Fxc 'Shotcut/shotcut.exe' || true)" -eq 1
+          test "$(unzip -Z1 "$asset" | grep -Fxc 'Shotcut/shotcut-mcp.exe' || true)" -eq 1
+          test "$(unzip -Z1 "$asset" | grep -Fxc 'Shotcut/opengl32sw.dll' || true)" -eq 1
+          if unzip -Z1 "$asset" | grep -Eq '(^/|(^|/)\.\.(/|$))'; then
+            echo 'Unsafe ZIP member path' >&2
+            exit 1
+          fi
+          (cd dist && sha256sum "$ASSET_NAME" > SHA256SUMS.txt)
+
+      - name: Create verified draft, upload, then publish
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -Eeuo pipefail
+          tag_created=0
+          release_id=""
+
+          rollback() {
+            local rc=$?
+            trap - EXIT
+            if (( rc != 0 )); then
+              set +e
+              safe_to_delete_tag=1
+              if [[ -n "$release_id" ]]; then
+                current_release="$(gh api "repos/$EXPECTED_REPOSITORY/releases/$release_id" 2>/dev/null)"
+                if [[ $? -eq 0 ]] && jq -e \
+                  --arg tag "$TAG" --arg title "$RELEASE_TITLE" '
+                    .tag_name == $tag and .name == $title and
+                    .draft == true and .prerelease == true
+                  ' <<<"$current_release" >/dev/null; then
+                  gh api --method DELETE "repos/$EXPECTED_REPOSITORY/releases/$release_id"
+                  test $? -eq 0 || safe_to_delete_tag=0
+                else
+                  safe_to_delete_tag=0
+                fi
+              fi
+              if [[ "$tag_created" -eq 1 && "$safe_to_delete_tag" -eq 1 ]]; then
+                release_pages="$(gh api --paginate --slurp "repos/$EXPECTED_REPOSITORY/releases?per_page=100")"
+                if jq -e --arg tag "$TAG" 'add | any(.tag_name == $tag)' <<<"$release_pages" >/dev/null; then
+                  safe_to_delete_tag=0
+                fi
+              fi
+              if [[ "$tag_created" -eq 1 && "$safe_to_delete_tag" -eq 1 ]]; then
+                ref_json="$(gh api "repos/$EXPECTED_REPOSITORY/git/ref/tags/$TAG" 2>/dev/null)"
+                if [[ $? -eq 0 ]] && jq -e --arg sha "$EXPECTED_SHA" \
+                  '.object.type == "commit" and .object.sha == $sha' <<<"$ref_json" >/dev/null; then
+                  gh api --method DELETE "repos/$EXPECTED_REPOSITORY/git/refs/tags/$TAG"
+                fi
+              fi
+            fi
+            exit "$rc"
+          }
+          trap rollback EXIT
+
+          commit_json="$(gh api "repos/$EXPECTED_REPOSITORY/git/commits/$EXPECTED_SHA")"
+          jq -e --arg sha "$EXPECTED_SHA" '.sha == $sha' <<<"$commit_json" >/dev/null
+          matching_tags="$(gh api "repos/$EXPECTED_REPOSITORY/git/matching-refs/tags/$TAG")"
+          jq -e --arg ref "refs/tags/$TAG" 'all(.ref != $ref)' <<<"$matching_tags" >/dev/null
+          release_pages="$(gh api --paginate --slurp "repos/$EXPECTED_REPOSITORY/releases?per_page=100")"
+          jq -e --arg tag "$TAG" 'add | all(.tag_name != $tag)' <<<"$release_pages" >/dev/null
+
+          tag_json="$(gh api --method POST "repos/$EXPECTED_REPOSITORY/git/refs" -f ref="refs/tags/$TAG" -f sha="$EXPECTED_SHA")"
+          tag_created=1
+          jq -e --arg sha "$EXPECTED_SHA" '.object.type == "commit" and .object.sha == $sha' <<<"$tag_json" >/dev/null
+
+          printf '%s\n' \
+            "Unsigned Windows x64 portable preview built from commit $EXPECTED_SHA." \
+            "" \
+            "- Includes the packaged Rust MCP sidecar." \
+            "- The ZIP was extracted and tested on GitHub-hosted Windows." \
+            "- The packaged MCP sidecar startup and configuration path passed." \
+            "- Shotcut passed fresh-profile GUI startup using D3D11 WARP and bundled software OpenGL." \
+            "- The Elements path generated multiple thumbnails, completed a 30-second soak per backend, and exited cleanly." \
+            "" \
+            "Build run: https://github.com/$EXPECTED_REPOSITORY/actions/runs/$RUN_ID" \
+            "" \
+            "Security notice: this build is unsigned and has not been malware-scanned. Test it in Windows Sandbox or a disposable virtual machine first." \
+            > dist/release-notes.md
+
+          release_json="$(jq -n \
+            --arg tag "$TAG" --arg target "$EXPECTED_SHA" --arg title "$RELEASE_TITLE" \
+            --rawfile body dist/release-notes.md '{
+              tag_name: $tag, target_commitish: $target, name: $title, body: $body,
+              draft: true, prerelease: true, generate_release_notes: false,
+              make_latest: "false"
+            }' | gh api --method POST "repos/$EXPECTED_REPOSITORY/releases" --input -)"
+          release_id="$(jq -er '.id | tostring' <<<"$release_json")"
+          jq -e --arg tag "$TAG" --arg target "$EXPECTED_SHA" --arg title "$RELEASE_TITLE" '
+            .tag_name == $tag and .target_commitish == $target and .name == $title and
+            .draft == true and .prerelease == true
+          ' <<<"$release_json" >/dev/null
+
+          gh release upload "$TAG" "dist/$ASSET_NAME" dist/SHA256SUMS.txt --repo "$EXPECTED_REPOSITORY"
+          asset_sha="$(sha256sum "dist/$ASSET_NAME" | cut -d' ' -f1)"
+          asset_size="$(stat -c '%s' "dist/$ASSET_NAME")"
+          sums_sha="$(sha256sum dist/SHA256SUMS.txt | cut -d' ' -f1)"
+          sums_size="$(stat -c '%s' dist/SHA256SUMS.txt)"
+
+          verified=false
+          for _ in {1..12}; do
+            release_now="$(gh api "repos/$EXPECTED_REPOSITORY/releases/$release_id")"
+            if jq -e \
+              --arg tag "$TAG" --arg asset "$ASSET_NAME" \
+              --arg asset_digest "sha256:$asset_sha" --arg sums_digest "sha256:$sums_sha" \
+              --argjson asset_size "$asset_size" --argjson sums_size "$sums_size" '
+                def exact_asset($name; $size; $digest):
+                  [.assets[] | select(.name == $name and .state == "uploaded" and .size == $size and .digest == $digest)] | length == 1;
+                .tag_name == $tag and .draft == true and .prerelease == true and
+                (.assets | length == 2) and
+                exact_asset($asset; $asset_size; $asset_digest) and
+                exact_asset("SHA256SUMS.txt"; $sums_size; $sums_digest)
+              ' <<<"$release_now" >/dev/null; then
+              verified=true
+              break
+            fi
+            sleep 5
+          done
+          test "$verified" = true
+
+          published="$(gh api --method PATCH "repos/$EXPECTED_REPOSITORY/releases/$release_id" -F draft=false -F prerelease=true)"
+          jq -e --arg tag "$TAG" --arg target "$EXPECTED_SHA" '
+            .tag_name == $tag and .target_commitish == $target and
+            .draft == false and .prerelease == true and (.assets | length == 2)
+          ' <<<"$published" >/dev/null
+          final_ref="$(gh api "repos/$EXPECTED_REPOSITORY/git/ref/tags/$TAG")"
+          jq -e --arg sha "$EXPECTED_SHA" '.object.type == "commit" and .object.sha == $sha' <<<"$final_ref" >/dev/null
+
+          release_url="$(jq -r '.html_url' <<<"$published")"
+          {
+            echo "Published: $release_url"
+            echo "Commit: $EXPECTED_SHA"
+            echo "Windows SHA-256: $asset_sha"
+          } >> "$GITHUB_STEP_SUMMARY"
+          trap - EXIT
