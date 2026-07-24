@@ -37,12 +37,12 @@ class McpBridge : public QObject
     Q_OBJECT
 
 public:
-    static std::unique_ptr<McpBridge> createFromEnvironment(MainWindow &window);
+    static std::unique_ptr<McpBridge> create(MainWindow &window);
     ~McpBridge() override;
 
 private:
     explicit McpBridge(MainWindow &window, QObject *parent = nullptr);
-    bool startFromEnvironment();
+    bool start();
 
     struct RpcResult
     {
@@ -133,6 +133,7 @@ private:
     QHash<QLocalSocket *, QByteArray> m_buffers;
     QByteArray m_token;
     QString m_endpoint;
+    QString m_sessionFile;
     QStringList m_allowedRoots;
     qint64 m_revision{1};
     bool m_busy{false};

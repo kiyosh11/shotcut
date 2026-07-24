@@ -26,7 +26,10 @@ When the bridge is enabled, Shotcut adds an **AI Automation** dock. It shows the
 
 ## Safety model
 
-The bridge is disabled unless SHOTCUT_MCP_ENABLE=1. When enabled it:
+The bridge starts automatically with Shotcut and can be explicitly disabled with
+`SHOTCUT_MCP_ENABLE=0`. Each editor run creates a fresh 256-bit token in a bounded per-user
+session descriptor; the Rust sidecar discovers it automatically and Shotcut removes it on a
+clean exit. The bridge:
 
 - accepts only same-user local socket or named-pipe connections;
 - requires a session token of at least 32 characters on every request;
@@ -54,21 +57,27 @@ Allowed roots are an application-level guard, not an operating-system sandbox ar
 
 ## Environment
 
-Shotcut and the Rust MCP process must receive the same token and endpoint. On Windows PowerShell, set the environment before starting the custom Shotcut build and the MCP client:
-
-    $env:SHOTCUT_MCP_ENABLE = '1'
-    $env:SHOTCUT_MCP_TOKEN = [guid]::NewGuid().ToString('N')
-    $env:SHOTCUT_MCP_ALLOWED_ROOTS = "$HOME\Videos;$HOME\Documents"
+No environment setup is required for normal use. Open the custom Shotcut build first. Shotcut
+starts the local bridge, creates a fresh protected session descriptor in its per-user application
+data directory, and the configured Rust MCP sidecar discovers the token and endpoint from that
+descriptor. The standard Movies, Downloads, Documents, Pictures, and Music folders are allowed
+by default when they exist.
 
 Optional variables:
 
 | Variable | Read by | Meaning |
 | --- | --- | --- |
+| SHOTCUT_MCP_ENABLE | Shotcut | Set to `0`, `false`, `no`, or `off` to disable automatic bridge startup. |
 | SHOTCUT_MCP_ENDPOINT | both | Local socket or named-pipe name. It must match on both sides. |
 | SHOTCUT_MCP_TIMEOUT_SECONDS | Rust server | Per-request timeout; defaults to 300 seconds. |
 | SHOTCUT_MCP_ALLOWED_ROOTS | Shotcut | Existing root directories allowed for media and project I/O. Uses ; on Windows and : on Unix. |
+| SHOTCUT_MCP_SESSION_FILE | both | Override the protected automatic session-descriptor path. |
+| SHOTCUT_MCP_TOKEN | both | Advanced compatibility override for a manually shared token of at least 32 characters. |
 
-If allowed roots are omitted or none resolve to existing directories, project/media/save/export file access is disabled. An output file does not need to exist, but its parent directory must already exist inside an explicitly configured allowed root.
+Set `SHOTCUT_MCP_ALLOWED_ROOTS` to an empty value to disable project/media/save/export file access,
+or set it to an explicit platform-separated list to replace the standard-folder defaults. An
+output file does not need to exist, but its parent directory must already exist inside an allowed
+root.
 
 ## Build and install
 
@@ -90,13 +99,21 @@ cmake --install /path/to/build
 
 The custom CMake target builds into `<build>/mcp-target/release`. Installation places the sidecar beside the Shotcut executable on Windows, in the application bundle on macOS, or in the configured binary directory on Unix.
 
-The repository's Windows portable workflow enables this target with a pinned GNU-host Rust toolchain. It rejects a package unless the sidecar is nonempty and appears exactly once in the ZIP. Including the sidecar does not enable editor control: SHOTCUT_MCP_ENABLE=1, a fresh token, allowed roots, and explicit MCP client registration are still required.
+The repository's Windows portable workflow enables this target with a pinned GNU-host Rust
+toolchain. It rejects a package unless the sidecar is nonempty and appears exactly once in the
+ZIP. Opening that custom Shotcut build starts the authenticated local bridge automatically. The
+MCP client still needs the one-time sidecar registration shown below.
 
 ## MCP client configuration
 
-Copy [codex.example.toml](codex.example.toml) into the relevant part of your user or project Codex configuration and replace the command with the absolute path to the custom `shotcut-mcp` binary produced from this fork. Official Shotcut binaries do not include the local MCP bridge and cannot be used as a substitute.
+Copy [codex.example.toml](codex.example.toml) into the relevant part of your user or project Codex
+configuration and replace the command with the absolute path to the bundled `shotcut-mcp` binary.
+After that one-time registration, open Shotcut normally; Codex starts the sidecar without a
+terminal and the sidecar discovers the active editor session. Official Shotcut binaries do not
+include this fork's local MCP bridge and cannot be used as a substitute.
 
-The same standard-I/O MCP server can be registered with another MCP client using that client's local-server configuration. It needs SHOTCUT_MCP_TOKEN, and it optionally needs the endpoint and timeout variables.
+The same standard-I/O MCP server can be registered with another MCP client using that client's
+local-server configuration. Automatic session discovery requires no MCP environment variables.
 
 For Codex configuration details, see the [official MCP documentation](https://learn.chatgpt.com/docs/extend/mcp). The server uses the [official Rust MCP SDK](https://github.com/modelcontextprotocol/rust-sdk).
 

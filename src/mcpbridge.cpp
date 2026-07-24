@@ -36,9 +36,12 @@
 #include <MltProducer.h>
 #include <QAction>
 #include <QColor>
+#include <QCoreApplication>
 #include <QCryptographicHash>
+#include <QDateTime>
 #include <QDir>
 #include <QDockWidget>
+#include <QFile>
 #include <QFileInfo>
 #include <QFont>
 #include <QFormLayout>
@@ -49,8 +52,11 @@
 #include <QLocalSocket>
 #include <QLockFile>
 #include <QMenu>
+#include <QRandomGenerator>
+#include <QSaveFile>
 #include <QScopedPointer>
 #include <QScopedValueRollback>
+#include <QStandardPaths>
 #include <QUndoStack>
 #include <QVBoxLayout>
 #include <QWidget>
@@ -58,6 +64,76 @@
 namespace {
 constexpr qsizetype kMaximumMessageBytes = 16 * 1024 * 1024;
 constexpr int kBridgeProtocolVersion = 2;
+
+bool mcpDisabledByEnvironment()
+{
+    if (!qEnvironmentVariableIsSet("SHOTCUT_MCP_ENABLE"))
+        return false;
+    const QString value = qEnvironmentVariable("SHOTCUT_MCP_ENABLE").trimmed().toLower();
+    return value == QStringLiteral("0") || value == QStringLiteral("false")
+           || value == QStringLiteral("no") || value == QStringLiteral("off");
+}
+
+QByteArray generateSessionToken()
+{
+    QByteArray token;
+    token.reserve(64);
+    auto *generator = QRandomGenerator::system();
+    for (int index = 0; index < 4; ++index) {
+        token.append(QByteArray::number(generator->generate64(), 16).rightJustified(16, '0'));
+    }
+    return token;
+}
+
+QString mcpSessionFilePath()
+{
+    const QString configured = qEnvironmentVariable("SHOTCUT_MCP_SESSION_FILE").trimmed();
+    if (!configured.isEmpty())
+        return QFileInfo(configured).absoluteFilePath();
+    return QDir(QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation))
+        .filePath(QStringLiteral("mcp-session.json"));
+}
+
+bool writeMcpSessionFile(const QString &path, const QString &endpoint, const QByteArray &token)
+{
+    const QFileInfo info(path);
+    if (!QDir().mkpath(info.absolutePath()))
+        return false;
+    QSaveFile file(path);
+    file.setDirectWriteFallback(false);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Text))
+        return false;
+    const QJsonObject descriptor{
+        {QStringLiteral("bridge_protocol"), kBridgeProtocolVersion},
+        {QStringLiteral("endpoint"), endpoint},
+        {QStringLiteral("token"), QString::fromLatin1(token)},
+        {QStringLiteral("process_id"), static_cast<double>(QCoreApplication::applicationPid())},
+        {QStringLiteral("created_at"),
+         QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs)},
+    };
+    const QByteArray payload = QJsonDocument(descriptor).toJson(QJsonDocument::Compact);
+    if (file.write(payload) != payload.size() || !file.commit())
+        return false;
+    if (QFile::setPermissions(path, QFileDevice::ReadOwner | QFileDevice::WriteOwner))
+        return true;
+    QFile::remove(path);
+    return false;
+}
+
+void removeMcpSessionFileIfOwned(const QString &path,
+                                 const QString &endpoint,
+                                 const QByteArray &token)
+{
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly) || file.size() > 4096)
+        return;
+    const auto descriptor = QJsonDocument::fromJson(file.readAll()).object();
+    file.close();
+    if (descriptor.value(QStringLiteral("endpoint")).toString() == endpoint
+        && descriptor.value(QStringLiteral("token")).toString().toLatin1() == token) {
+        QFile::remove(path);
+    }
+}
 
 bool pathWithinRoot(const QString &candidatePath, const QString &rootPath)
 {
@@ -136,13 +212,13 @@ McpBridge::RpcResult McpBridge::RpcResult::failure(int code,
     return result;
 }
 
-std::unique_ptr<McpBridge> McpBridge::createFromEnvironment(MainWindow &window)
+std::unique_ptr<McpBridge> McpBridge::create(MainWindow &window)
 {
-    if (qEnvironmentVariableIntValue("SHOTCUT_MCP_ENABLE") != 1)
+    if (mcpDisabledByEnvironment())
         return {};
 
     std::unique_ptr<McpBridge> bridge(new McpBridge(window));
-    if (!bridge->startFromEnvironment())
+    if (!bridge->start())
         return {};
     return bridge;
 }
@@ -174,6 +250,7 @@ void McpBridge::advanceRevision()
 McpBridge::~McpBridge()
 {
     m_server.close();
+    removeMcpSessionFileIfOwned(m_sessionFile, m_endpoint, m_token);
     if (m_ownsEndpoint) {
         QLocalServer::removeServer(m_endpoint);
         m_ownsEndpoint = false;
@@ -182,11 +259,14 @@ McpBridge::~McpBridge()
         m_endpointLock->unlock();
 }
 
-bool McpBridge::startFromEnvironment()
+bool McpBridge::start()
 {
     m_token = qgetenv("SHOTCUT_MCP_TOKEN");
-    if (m_token.size() < 32) {
-        LOG_WARNING() << "MCP bridge disabled: SHOTCUT_MCP_TOKEN must be at least 32 characters";
+    if (m_token.isEmpty()) {
+        m_token = generateSessionToken();
+    } else if (m_token.size() < 32) {
+        LOG_WARNING() << "MCP bridge disabled: configured SHOTCUT_MCP_TOKEN must be at least 32 "
+                         "characters";
         return false;
     }
 
@@ -232,6 +312,16 @@ bool McpBridge::startFromEnvironment()
         return false;
     }
     m_ownsEndpoint = true;
+    m_sessionFile = mcpSessionFilePath();
+    if (!writeMcpSessionFile(m_sessionFile, m_endpoint, m_token)) {
+        LOG_WARNING() << "MCP bridge failed to create its protected session descriptor";
+        m_server.close();
+        QLocalServer::removeServer(m_endpoint);
+        m_ownsEndpoint = false;
+        m_endpointLock->unlock();
+        m_endpointLock.reset();
+        return false;
+    }
     LOG_INFO() << "MCP bridge listening on a same-user local socket";
     setupAutomationDock();
     return true;
@@ -266,9 +356,10 @@ void McpBridge::setupAutomationDock()
     layout->addWidget(m_automationConnectionLabel);
 
     auto *description = new QLabel(
-        tr("A local, authenticated AI client can inspect the live project and submit typed, "
-           "revision-checked edits. Timeline edits use Shotcut history; profile changes "
-           "explicitly report their required history reset."),
+        tr("The local MCP bridge starts automatically with Shotcut. An authenticated AI client "
+           "can inspect the live project and submit typed, revision-checked edits. Timeline "
+           "edits use Shotcut history; profile changes explicitly report their required history "
+           "reset."),
         content);
     description->setWordWrap(true);
     layout->addWidget(description);
@@ -1370,8 +1461,21 @@ bool McpBridge::validateMediaResourcePaths(const QString &path, QString &error) 
 void McpBridge::loadAllowedRoots()
 {
     m_allowedRoots.clear();
-    auto configured = qEnvironmentVariable("SHOTCUT_MCP_ALLOWED_ROOTS")
-                          .split(QDir::listSeparator(), Qt::SkipEmptyParts);
+    QStringList configured;
+    if (qEnvironmentVariableIsSet("SHOTCUT_MCP_ALLOWED_ROOTS")) {
+        configured = qEnvironmentVariable("SHOTCUT_MCP_ALLOWED_ROOTS")
+                         .split(QDir::listSeparator(), Qt::SkipEmptyParts);
+    } else {
+        const QList<QStandardPaths::StandardLocation> defaultLocations{
+            QStandardPaths::MoviesLocation,
+            QStandardPaths::DownloadLocation,
+            QStandardPaths::DocumentsLocation,
+            QStandardPaths::PicturesLocation,
+            QStandardPaths::MusicLocation,
+        };
+        for (const auto location : defaultLocations)
+            configured.append(QStandardPaths::standardLocations(location));
+    }
 
     for (const auto &root : configured) {
         QFileInfo info(root);

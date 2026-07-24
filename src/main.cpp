@@ -573,7 +573,7 @@ int main(int argc, char **argv)
         }
 
         {
-            auto mcpBridge = McpBridge::createFromEnvironment(*a.mainWindow);
+            auto mcpBridge = McpBridge::create(*a.mainWindow);
             result = a.exec();
         }
 

@@ -1,5 +1,6 @@
 use std::{
-    env, io,
+    env, fs, io,
+    path::{Path, PathBuf},
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
@@ -18,6 +19,7 @@ use tokio::{
 const DEFAULT_ENDPOINT: &str = "shotcut-mcp";
 const DEFAULT_TIMEOUT_SECONDS: u64 = 300;
 const MAX_MESSAGE_BYTES: usize = 16 * 1024 * 1024;
+const MAX_SESSION_FILE_BYTES: u64 = 4096;
 const BRIDGE_PROTOCOL_VERSION: u32 = 2;
 
 fn framed_message_fits(payload_bytes: usize, max_bytes: usize) -> bool {
@@ -124,6 +126,104 @@ struct RpcError {
     data: Option<Value>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+struct SessionDescriptor {
+    bridge_protocol: u32,
+    endpoint: String,
+    token: String,
+}
+
+fn session_file_in(base: &Path) -> PathBuf {
+    base.join("Meltytech")
+        .join("Shotcut")
+        .join("mcp-session.json")
+}
+
+fn default_session_file() -> Result<PathBuf, BridgeError> {
+    if let Some(path) = env::var_os("SHOTCUT_MCP_SESSION_FILE").filter(|value| !value.is_empty()) {
+        return Ok(PathBuf::from(path));
+    }
+    #[cfg(windows)]
+    if let Some(base) = env::var_os("LOCALAPPDATA") {
+        return Ok(session_file_in(Path::new(&base)));
+    }
+    #[cfg(target_os = "macos")]
+    if let Some(home) = env::var_os("HOME") {
+        return Ok(session_file_in(
+            &PathBuf::from(home)
+                .join("Library")
+                .join("Application Support"),
+        ));
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    if let Some(base) = env::var_os("XDG_DATA_HOME") {
+        return Ok(session_file_in(Path::new(&base)));
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    if let Some(home) = env::var_os("HOME") {
+        return Ok(session_file_in(&PathBuf::from(home).join(".local/share")));
+    }
+    Err(BridgeError::Configuration(
+        "could not locate the Shotcut MCP session file".into(),
+    ))
+}
+
+fn read_session_descriptor(path: &Path) -> Result<SessionDescriptor, BridgeError> {
+    let metadata = fs::symlink_metadata(path).map_err(|error| {
+        BridgeError::Configuration(format!(
+            "Shotcut is not exposing an MCP session at {}: {error}. Open Shotcut first",
+            path.display()
+        ))
+    })?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(BridgeError::Configuration(
+            "the Shotcut MCP session descriptor must be a regular file".into(),
+        ));
+    }
+    if metadata.len() > MAX_SESSION_FILE_BYTES {
+        return Err(BridgeError::Configuration(
+            "the Shotcut MCP session descriptor exceeds its size limit".into(),
+        ));
+    }
+    let contents = fs::read(path)?;
+    let descriptor: SessionDescriptor = serde_json::from_slice(&contents)?;
+    if descriptor.bridge_protocol != BRIDGE_PROTOCOL_VERSION {
+        return Err(BridgeError::Configuration(format!(
+            "incompatible Shotcut MCP session protocol: expected {BRIDGE_PROTOCOL_VERSION}, received {}",
+            descriptor.bridge_protocol
+        )));
+    }
+    Ok(descriptor)
+}
+
+fn resolve_connection(
+    environment_token: Option<String>,
+    environment_endpoint: Option<String>,
+    descriptor: Option<SessionDescriptor>,
+) -> Result<(String, String), BridgeError> {
+    let (token, discovered_endpoint) = match environment_token {
+        Some(token) => (token, DEFAULT_ENDPOINT.to_owned()),
+        None => {
+            let descriptor = descriptor.ok_or_else(|| {
+                BridgeError::Configuration("Open Shotcut before starting its MCP server".into())
+            })?;
+            (descriptor.token, descriptor.endpoint)
+        }
+    };
+    if token.len() < 32 || token.contains('\0') {
+        return Err(BridgeError::Configuration(
+            "the Shotcut MCP session token must contain at least 32 characters".into(),
+        ));
+    }
+    let endpoint = environment_endpoint.unwrap_or(discovered_endpoint);
+    if endpoint.trim().is_empty() || endpoint.contains('\0') {
+        return Err(BridgeError::Configuration(
+            "the Shotcut MCP endpoint is invalid".into(),
+        ));
+    }
+    Ok((token, endpoint))
+}
+
 fn decode_response(response_text: &str, expected_id: u64) -> Result<Value, BridgeError> {
     let response: RpcResponse = serde_json::from_str(response_text)?;
     if response.bridge_protocol != Some(BRIDGE_PROTOCOL_VERSION) {
@@ -159,19 +259,17 @@ fn decode_response(response_text: &str, expected_id: u64) -> Result<Value, Bridg
 
 impl BridgeClient {
     pub fn from_env() -> Result<Self, BridgeError> {
-        let token = env::var("SHOTCUT_MCP_TOKEN").map_err(|_| {
-            BridgeError::Configuration(
-                "SHOTCUT_MCP_TOKEN must be set in both Shotcut and this MCP server".into(),
-            )
-        })?;
-        if token.len() < 32 {
-            return Err(BridgeError::Configuration(
-                "SHOTCUT_MCP_TOKEN must contain at least 32 characters".into(),
-            ));
-        }
-
-        let endpoint =
-            env::var("SHOTCUT_MCP_ENDPOINT").unwrap_or_else(|_| DEFAULT_ENDPOINT.to_owned());
+        let environment_token = env::var("SHOTCUT_MCP_TOKEN").ok();
+        let descriptor = if environment_token.is_none() {
+            Some(read_session_descriptor(&default_session_file()?)?)
+        } else {
+            None
+        };
+        let (token, endpoint) = resolve_connection(
+            environment_token,
+            env::var("SHOTCUT_MCP_ENDPOINT").ok(),
+            descriptor,
+        )?;
         let timeout_seconds = env::var("SHOTCUT_MCP_TIMEOUT_SECONDS")
             .ok()
             .and_then(|value| value.parse::<u64>().ok())
@@ -296,7 +394,6 @@ where
 
 #[cfg(unix)]
 async fn transact(endpoint: &str, payload: &[u8]) -> io::Result<String> {
-    use std::path::{Path, PathBuf};
     use tokio::net::UnixStream;
 
     let path = if Path::new(endpoint).is_absolute() {
@@ -352,6 +449,50 @@ mod tests {
             next_id: Arc::new(AtomicU64::new(1)),
             timeout: Duration::from_secs(1),
         }
+    }
+
+    fn descriptor() -> SessionDescriptor {
+        SessionDescriptor {
+            bridge_protocol: BRIDGE_PROTOCOL_VERSION,
+            endpoint: "discovered-shotcut".into(),
+            token: "abcdef0123456789abcdef0123456789".into(),
+        }
+    }
+
+    #[test]
+    fn session_file_uses_the_shotcut_application_directory() {
+        let expected = PathBuf::from("base")
+            .join("Meltytech")
+            .join("Shotcut")
+            .join("mcp-session.json");
+        assert_eq!(session_file_in(Path::new("base")), expected);
+    }
+
+    #[test]
+    fn connection_is_discovered_from_the_open_editor_session() {
+        let (token, endpoint) = resolve_connection(None, None, Some(descriptor())).unwrap();
+        assert_eq!(token, "abcdef0123456789abcdef0123456789");
+        assert_eq!(endpoint, "discovered-shotcut");
+    }
+
+    #[test]
+    fn explicit_environment_connection_remains_supported() {
+        let environment_token = "0123456789abcdef0123456789abcdef".to_owned();
+        let (token, endpoint) = resolve_connection(
+            Some(environment_token.clone()),
+            Some("custom-endpoint".into()),
+            None,
+        )
+        .unwrap();
+        assert_eq!(token, environment_token);
+        assert_eq!(endpoint, "custom-endpoint");
+    }
+
+    #[test]
+    fn invalid_discovered_connection_is_rejected() {
+        let mut invalid = descriptor();
+        invalid.token = "too-short".into();
+        assert!(resolve_connection(None, None, Some(invalid)).is_err());
     }
 
     #[test]

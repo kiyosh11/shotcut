@@ -16,7 +16,7 @@
 
 ## AI/MCP integration
 
-This fork includes an opt-in pure-Rust MCP server and a local authenticated Shotcut editing bridge. See [mcp/shotcut-mcp/README.md](mcp/shotcut-mcp/README.md) for capabilities, safeguards, build instructions, and client configuration.
+This fork includes a pure-Rust MCP server and an authenticated editing bridge that starts automatically with the custom Shotcut build. See [mcp/shotcut-mcp/README.md](mcp/shotcut-mcp/README.md) for capabilities, safeguards, build instructions, and one-time client registration.
 
 Official binaries from shotcut.org do not contain this fork's MCP bridge or sidecar. MCP users need a custom binary built from this audited fork revision; an unrelated upstream executable cannot provide these tools.
 MCP exports are checked against their final `avformat` consumer before any encode job is created. When no preset is supplied, Shotcut resets to its known default export settings; MCP requires exact canonical allowlisted muxer tokens, generates the only image-sequence frame token, and rejects two-pass output, multi-output/network muxers, sidecar-producing codec parameters, and unclassified Advanced or custom-preset properties. The `editor_status.export_presets` list is for discovery, and every selected preset remains subject to this final consumer policy. Unsupported export configurations remain available through Shotcut's manual export interface.
