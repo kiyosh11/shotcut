@@ -23,7 +23,7 @@
 namespace Mlt {
 class Producer;
 class Service;
-}
+} // namespace Mlt
 class AttachedFiltersModel;
 class MainWindow;
 class QDockWidget;
@@ -85,11 +85,8 @@ private:
     bool applySubtitleOperation(const QJsonObject &operation, QString &error);
     bool applyFilterParameters(
         int track, int clip, int filterIndex, const QJsonObject &parameters, QString &error);
-    bool filterClipContext(int track,
-                           int clip,
-                           int &sourceIn,
-                           int &sourceOut,
-                           int &playlistStart) const;
+    bool filterClipContext(
+        int track, int clip, int &sourceIn, int &sourceOut, int &playlistStart) const;
     bool filterKeyframeTiming(Mlt::Producer &producer,
                               Mlt::Service &service,
                               int sourceIn,

@@ -387,7 +387,7 @@ void UndoParameterCommand::redo()
         Q_ASSERT(producer.is_valid());
         if (producer.is_valid() && m_filterController) {
             Mlt::Service service = m_filterController->attachedModel()->doGetService(producer,
-                                                                                    m_row);
+                                                                                     m_row);
             for (const QString &propertyName : m_updatedProperties) {
                 const QByteArray name = propertyName.toUtf8();
                 if (!m_after.property_exists(name.constData()))

@@ -230,10 +230,7 @@ bool McpBridge::applyTimelineOperation(const QJsonObject &operation, QString &er
 
         Util::passProducerProperties(info->producer, changed.get());
         Util::updateCaption(changed.get());
-        Mlt::Controller::copyFilters(*info->producer,
-                                     *changed,
-                                     false,
-                                     MLT.FILTER_INDEX_ALL);
+        Mlt::Controller::copyFilters(*info->producer, *changed, false, MLT.FILTER_INDEX_ALL);
         const int length = qMax(1, qRound(requestedLength));
         const int sourceIn = info->frame_in;
         const int sourceOut = info->frame_out;
@@ -243,12 +240,7 @@ bool McpBridge::applyTimelineOperation(const QJsonObject &operation, QString &er
         changed->set_in_and_out(in, out);
         if (!qFuzzyCompare(newSpeed, 1.0))
             changed->set("warp_pitch", operation.value(QStringLiteral("preserve_pitch")).toBool());
-        MLT.adjustClipFilters(*changed,
-                              sourceIn,
-                              sourceOut,
-                              in - sourceIn,
-                              sourceOut - out,
-                              0);
+        MLT.adjustClipFilters(*changed, sourceIn, sourceOut, in - sourceIn, sourceOut - out, 0);
 
         auto *command = new Timeline::UpdateCommand(*timeline, track, clip, info->start);
         command->setXmlAfter(MLT.XML(changed.get()));
@@ -260,8 +252,9 @@ bool McpBridge::applyTimelineOperation(const QJsonObject &operation, QString &er
         stack->push(command);
 
         auto updated = model->getClipInfo(track, clip);
-        const double updatedSpeed
-            = updated && updated->producer ? Util::GetSpeedFromProducer(updated->producer) : 0.0;
+        const double updatedSpeed = updated && updated->producer
+                                        ? Util::GetSpeedFromProducer(updated->producer)
+                                        : 0.0;
         if (!updated || !updated->producer || !qIsFinite(updatedSpeed)
             || qAbs(updatedSpeed - newSpeed) > 0.000001) {
             error = QStringLiteral("Shotcut did not apply the requested clip speed");
@@ -357,8 +350,7 @@ bool McpBridge::applyTimelineOperation(const QJsonObject &operation, QString &er
             = !operation.value(QStringLiteral("locked")).isBool()
               || model->data(retainedIndex, MultitrackModel::IsLockedRole).toBool()
                      == operation.value(QStringLiteral("locked")).toBool();
-        if (!nameMatches || !mutedMatches || !hiddenMatches || !compositeMatches
-            || !lockedMatches) {
+        if (!nameMatches || !mutedMatches || !hiddenMatches || !compositeMatches || !lockedMatches) {
             error = QStringLiteral("Shotcut did not retain the requested track state");
             return false;
         }
