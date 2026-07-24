@@ -9,9 +9,9 @@
 
 #include "mcpbridge.h"
 
-#include "mcpkeyframeinterpolation.h"
 #include "mcpbridgepolicy.h"
 #include "mcpexporttargetpolicy.h"
+#include "mcpkeyframeinterpolation.h"
 
 #include "mcpundoutils.h"
 
@@ -252,8 +252,9 @@ McpBridge::RpcResult McpBridge::controlEditor(const QJsonObject &params)
         }
         const int maximum = model->tractor() ? qMax(0, model->tractor()->get_length()) : 0;
         if (requested < 0 || requested > maximum)
-            return RpcResult::failure(
-                -32602, QStringLiteral("position must be between 0 and %1").arg(maximum));
+            return RpcResult::failure(-32602,
+                                      QStringLiteral("position must be between 0 and %1")
+                                          .arg(maximum));
         m_window.seekTimeline(requested);
     } else if (action == QStringLiteral("select_clip")) {
         int track = -1;
@@ -299,8 +300,8 @@ McpBridge::RpcResult McpBridge::controlEditor(const QJsonObject &params)
 
     QJsonArray selection;
     for (const auto &point : timeline->selection()) {
-        selection.append(QJsonObject{{QStringLiteral("track"), point.y()},
-                                     {QStringLiteral("clip"), point.x()}});
+        selection.append(
+            QJsonObject{{QStringLiteral("track"), point.y()}, {QStringLiteral("clip"), point.x()}});
     }
     return RpcResult::success(QJsonObject{
         {QStringLiteral("action"), action},
@@ -322,25 +323,27 @@ McpBridge::RpcResult McpBridge::setProjectProfile(const QJsonObject &params)
     int frameRateNumerator = 0;
     int frameRateDenominator = 0;
     if (!jsonInteger(params, QStringLiteral("width"), &width) || width < 64 || width > 8192
-        || width % 2 != 0 || !jsonInteger(params, QStringLiteral("height"), &height)
-        || height < 64 || height > 8192 || height % 2 != 0) {
-        return RpcResult::failure(
-            -32602, QStringLiteral("width and height must be even values from 64 through 8192"));
+        || width % 2 != 0 || !jsonInteger(params, QStringLiteral("height"), &height) || height < 64
+        || height > 8192 || height % 2 != 0) {
+        return RpcResult::failure(-32602,
+                                  QStringLiteral(
+                                      "width and height must be even values from 64 through 8192"));
     }
     if (!jsonInteger(params, QStringLiteral("frame_rate_num"), &frameRateNumerator)
         || !jsonInteger(params, QStringLiteral("frame_rate_den"), &frameRateDenominator)
         || frameRateNumerator <= 0 || frameRateDenominator <= 0
         || static_cast<double>(frameRateNumerator) / frameRateDenominator < 1.0
         || static_cast<double>(frameRateNumerator) / frameRateDenominator > 240.0) {
-        return RpcResult::failure(
-            -32602, QStringLiteral("frame rate must be a positive rational from 1 to 240"));
+        return RpcResult::failure(-32602,
+                                  QStringLiteral(
+                                      "frame rate must be a positive rational from 1 to 240"));
     }
 
     const bool hasDisplayNumerator = params.contains(QStringLiteral("display_aspect_num"));
     const bool hasDisplayDenominator = params.contains(QStringLiteral("display_aspect_den"));
     if (hasDisplayNumerator != hasDisplayDenominator) {
-        return RpcResult::failure(
-            -32602, QStringLiteral("supply both display aspect fields or neither"));
+        return RpcResult::failure(-32602,
+                                  QStringLiteral("supply both display aspect fields or neither"));
     }
     int displayNumerator = width;
     int displayDenominator = height;
@@ -414,8 +417,7 @@ McpBridge::RpcResult McpBridge::setProjectProfile(const QJsonObject &params)
 
     auto *stack = m_window.undoStack();
     const bool hadHistory = stack && (stack->canUndo() || stack->canRedo());
-    if (hadHistory
-        && !params.value(QStringLiteral("clear_undo_history")).toBool()) {
+    if (hadHistory && !params.value(QStringLiteral("clear_undo_history")).toBool()) {
         return RpcResult::failure(
             -32002,
             QStringLiteral("profile changes reload the project; set clear_undo_history to true"));
@@ -434,15 +436,17 @@ McpBridge::RpcResult McpBridge::setProjectProfile(const QJsonObject &params)
         MLT.fixLengthProperties(*producer);
         xml = MLT.XML(producer);
         if (xml.isEmpty()) {
-            return RpcResult::failure(
-                -32003, QStringLiteral("Shotcut could not serialize the active project"));
+            return RpcResult::failure(-32003,
+                                      QStringLiteral(
+                                          "Shotcut could not serialize the active project"));
         }
     }
     if (!xml.isEmpty()
         && (!MLT.consumer() || !MLT.consumer()->is_valid() || !MLT.producer()
             || !MLT.producer()->is_valid())) {
-        return RpcResult::failure(
-            -32003, QStringLiteral("Shotcut is not ready to reload the active project"));
+        return RpcResult::failure(-32003,
+                                  QStringLiteral(
+                                      "Shotcut is not ready to reload the active project"));
     }
 
     profile.set_explicit(1);
@@ -536,10 +540,8 @@ McpBridge::RpcResult McpBridge::applyEditPlan(const QJsonObject &params)
             QStringLiteral("add_subtitle_track"),
         };
         for (int index = 0; index + 1 < operations.size(); ++index) {
-            const QString type = operations.at(index)
-                                     .toObject()
-                                     .value(QStringLiteral("op"))
-                                     .toString();
+            const QString type
+                = operations.at(index).toObject().value(QStringLiteral("op")).toString();
             if (snapshotInvalidatingOperations.contains(type)) {
                 return RpcResult::failure(
                     -32602,
@@ -582,8 +584,8 @@ McpBridge::RpcResult McpBridge::applyEditPlan(const QJsonObject &params)
     if (stack->canRedo()) {
         return RpcResult::failure(
             -32002,
-                QStringLiteral(
-                    "Apply or discard the existing redo history before submitting an edit plan"));
+            QStringLiteral(
+                "Apply or discard the existing redo history before submitting an edit plan"));
     }
 
     if (m_window.multitrack() && m_window.timelineDock()->model()->tractor())
@@ -727,28 +729,17 @@ bool McpBridge::validateOperation(const QJsonObject &operation, QString &error) 
 {
     const QString type = requiredString(operation, QStringLiteral("op"));
     static const QStringList supported{
-        QStringLiteral("add_track"),
-        QStringLiteral("remove_track"),
-        QStringLiteral("insert_media"),
-        QStringLiteral("move_clip"),
-        QStringLiteral("trim_clip"),
-        QStringLiteral("split_clip"),
-        QStringLiteral("remove_clip"),
-        QStringLiteral("set_clip_speed"),
-        QStringLiteral("set_clip_gain"),
-        QStringLiteral("set_clip_fade"),
-        QStringLiteral("add_transition"),
-        QStringLiteral("set_track_state"),
-        QStringLiteral("add_filter"),
-        QStringLiteral("set_filter_parameters"),
-        QStringLiteral("set_filter_state"),
-        QStringLiteral("remove_filter"),
-        QStringLiteral("set_filter_keyframe"),
-        QStringLiteral("remove_filter_keyframe"),
-        QStringLiteral("add_marker"),
-        QStringLiteral("update_marker"),
-        QStringLiteral("remove_marker"),
-        QStringLiteral("add_subtitle_track"),
+        QStringLiteral("add_track"),           QStringLiteral("remove_track"),
+        QStringLiteral("insert_media"),        QStringLiteral("move_clip"),
+        QStringLiteral("trim_clip"),           QStringLiteral("split_clip"),
+        QStringLiteral("remove_clip"),         QStringLiteral("set_clip_speed"),
+        QStringLiteral("set_clip_gain"),       QStringLiteral("set_clip_fade"),
+        QStringLiteral("add_transition"),      QStringLiteral("set_track_state"),
+        QStringLiteral("add_filter"),          QStringLiteral("set_filter_parameters"),
+        QStringLiteral("set_filter_state"),    QStringLiteral("remove_filter"),
+        QStringLiteral("set_filter_keyframe"), QStringLiteral("remove_filter_keyframe"),
+        QStringLiteral("add_marker"),          QStringLiteral("update_marker"),
+        QStringLiteral("remove_marker"),       QStringLiteral("add_subtitle_track"),
         QStringLiteral("replace_subtitles"),
     };
     if (!supported.contains(type)) {
@@ -876,8 +867,7 @@ bool McpBridge::validateOperation(const QJsonObject &operation, QString &error) 
                 return true;
         }
 
-        if (type == QStringLiteral("update_marker")
-            && !operation.contains(QStringLiteral("text"))
+        if (type == QStringLiteral("update_marker") && !operation.contains(QStringLiteral("text"))
             && !operation.contains(QStringLiteral("start"))
             && !operation.contains(QStringLiteral("end"))
             && !operation.contains(QStringLiteral("color"))) {
@@ -905,7 +895,7 @@ bool McpBridge::validateOperation(const QJsonObject &operation, QString &error) 
         }
 
         int start = type == QStringLiteral("add_marker") ? -1
-                                                           : existingMarkers.at(markerIndex).start;
+                                                         : existingMarkers.at(markerIndex).start;
         int end = type == QStringLiteral("add_marker") ? -1 : existingMarkers.at(markerIndex).end;
         const bool wasPointMarker = type == QStringLiteral("update_marker") && start == end;
         if (operation.contains(QStringLiteral("start"))
@@ -1101,13 +1091,13 @@ bool McpBridge::validateOperation(const QJsonObject &operation, QString &error) 
             return false;
         }
         const auto info = m_window.timelineDock()->model()->getClipInfo(track, clip);
-        if (!info || !info->producer || !info->producer->is_valid()
-            || info->producer->is_blank()) {
+        if (!info || !info->producer || !info->producer->is_valid() || info->producer->is_blank()) {
             error = QStringLiteral("fade target must be a media clip, not a timeline gap");
             return false;
         }
-        const auto clipIndex = m_window.timelineDock()->model()->index(
-            clip, 0, m_window.timelineDock()->model()->index(track));
+        const auto clipIndex = m_window.timelineDock()
+                                   ->model()
+                                   ->index(clip, 0, m_window.timelineDock()->model()->index(track));
         if (m_window.timelineDock()
                 ->model()
                 ->data(clipIndex, MultitrackModel::IsTransitionRole)
@@ -1127,15 +1117,15 @@ bool McpBridge::validateOperation(const QJsonObject &operation, QString &error) 
             return false;
         }
         const auto info = m_window.timelineDock()->model()->getClipInfo(track, clip);
-        if (!info || !info->producer || !info->producer->is_valid()
-            || info->producer->is_blank()
+        if (!info || !info->producer || !info->producer->is_valid() || info->producer->is_blank()
             || (info->producer->get("audio_index")
                 && info->producer->get_int("audio_index") == -1)) {
             error = QStringLiteral("clip does not contain an enabled audio stream");
             return false;
         }
-        const auto clipIndex = m_window.timelineDock()->model()->index(
-            clip, 0, m_window.timelineDock()->model()->index(track));
+        const auto clipIndex = m_window.timelineDock()
+                                   ->model()
+                                   ->index(clip, 0, m_window.timelineDock()->model()->index(track));
         if (m_window.timelineDock()
                 ->model()
                 ->data(clipIndex, MultitrackModel::IsTransitionRole)
@@ -1174,8 +1164,8 @@ bool McpBridge::validateOperation(const QJsonObject &operation, QString &error) 
             return false;
         }
         const QString service = QString::fromUtf8(info->producer->get("mlt_service"));
-        const QString shotcutProducer
-            = QString::fromUtf8(info->producer->get(kShotcutProducerProperty));
+        const QString shotcutProducer = QString::fromUtf8(
+            info->producer->get(kShotcutProducerProperty));
         if (!service.startsWith(QStringLiteral("avformat"))
             && !shotcutProducer.startsWith(QStringLiteral("avformat"))
             && service != QStringLiteral("timewarp")) {
@@ -1297,11 +1287,7 @@ bool McpBridge::validateOperation(const QJsonObject &operation, QString &error) 
             int filterSourceIn = 0;
             int filterSourceOut = -1;
             int playlistStart = 0;
-            if (!filterClipContext(track,
-                                   clip,
-                                   filterSourceIn,
-                                   filterSourceOut,
-                                   playlistStart)) {
+            if (!filterClipContext(track, clip, filterSourceIn, filterSourceOut, playlistStart)) {
                 error = QStringLiteral("filter clip timing is unavailable");
                 return false;
             }
@@ -1404,12 +1390,7 @@ bool McpBridge::validateOperation(const QJsonObject &operation, QString &error) 
                 error = QStringLiteral("filter parameter '%1' is too large").arg(name);
                 return false;
             }
-            if (!normalizeFilterPathParameter(filterId,
-                                              filterService,
-                                              name,
-                                              value,
-                                              nullptr,
-                                              error)) {
+            if (!normalizeFilterPathParameter(filterId, filterService, name, value, nullptr, error)) {
                 return false;
             }
         }

@@ -23,7 +23,7 @@
 namespace Mlt {
 class Producer;
 class Service;
-}
+} // namespace Mlt
 class AttachedFiltersModel;
 class MainWindow;
 class QDockWidget;
@@ -37,12 +37,12 @@ class McpBridge : public QObject
     Q_OBJECT
 
 public:
-    static std::unique_ptr<McpBridge> createFromEnvironment(MainWindow &window);
+    static std::unique_ptr<McpBridge> create(MainWindow &window);
     ~McpBridge() override;
 
 private:
     explicit McpBridge(MainWindow &window, QObject *parent = nullptr);
-    bool startFromEnvironment();
+    bool start();
 
     struct RpcResult
     {
@@ -85,11 +85,8 @@ private:
     bool applySubtitleOperation(const QJsonObject &operation, QString &error);
     bool applyFilterParameters(
         int track, int clip, int filterIndex, const QJsonObject &parameters, QString &error);
-    bool filterClipContext(int track,
-                           int clip,
-                           int &sourceIn,
-                           int &sourceOut,
-                           int &playlistStart) const;
+    bool filterClipContext(
+        int track, int clip, int &sourceIn, int &sourceOut, int &playlistStart) const;
     bool filterKeyframeTiming(Mlt::Producer &producer,
                               Mlt::Service &service,
                               int sourceIn,
@@ -133,6 +130,7 @@ private:
     QHash<QLocalSocket *, QByteArray> m_buffers;
     QByteArray m_token;
     QString m_endpoint;
+    QString m_sessionFile;
     QStringList m_allowedRoots;
     qint64 m_revision{1};
     bool m_busy{false};

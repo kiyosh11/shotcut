@@ -3,7 +3,6 @@
 
 [mcp_servers.shotcut]
 command = "/absolute/path/to/shotcut-mcp"
-env_vars = ["SHOTCUT_MCP_TOKEN", "SHOTCUT_MCP_ENDPOINT", "SHOTCUT_MCP_TIMEOUT_SECONDS"]
 default_tools_approval_mode = "writes"
 startup_timeout_sec = 10
 tool_timeout_sec = 300

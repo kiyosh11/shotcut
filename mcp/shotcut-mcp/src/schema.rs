@@ -618,28 +618,29 @@ mod tests {
             request.command,
             EditorCommand::SeekRelative { frames: -1 }
         ));
-        assert!(serde_json::from_value::<EditorControlRequest>(serde_json::json!({
-            "expected_revision": 4,
-            "command": {"action": "run_shell"}
-        }))
-        .is_err());
+        assert!(
+            serde_json::from_value::<EditorControlRequest>(serde_json::json!({
+                "expected_revision": 4,
+                "command": {"action": "run_shell"}
+            }))
+            .is_err()
+        );
     }
 
     #[test]
     fn project_profile_requires_every_format_choice() {
-        let explicit: SetProjectProfileRequest =
-            serde_json::from_value(serde_json::json!({
-                "expected_revision": 9,
-                "width": 1080,
-                "height": 1920,
-                "frame_rate_num": 30000,
-                "frame_rate_den": 1001,
-                "progressive": true,
-                "colorspace": "bt709",
-                "dynamic_range": "sdr",
-                "clear_undo_history": true
-            }))
-            .unwrap();
+        let explicit: SetProjectProfileRequest = serde_json::from_value(serde_json::json!({
+            "expected_revision": 9,
+            "width": 1080,
+            "height": 1920,
+            "frame_rate_num": 30000,
+            "frame_rate_den": 1001,
+            "progressive": true,
+            "colorspace": "bt709",
+            "dynamic_range": "sdr",
+            "clear_undo_history": true
+        }))
+        .unwrap();
         assert_eq!(explicit.width, 1080);
         assert_eq!(explicit.height, 1920);
         assert_eq!(explicit.frame_rate_num, 30000);

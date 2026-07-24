@@ -154,11 +154,14 @@ function Test-McpSidecarStartup
         'SHOTCUT_MCP_ENABLE',
         'SHOTCUT_MCP_TOKEN',
         'SHOTCUT_MCP_ENDPOINT',
+        'SHOTCUT_MCP_SESSION_FILE',
         'SHOTCUT_MCP_ALLOWED_ROOTS',
         'RUST_LOG'
     )) {
         [void] $startInfo.Environment.Remove($name)
     }
+    $startInfo.Environment['SHOTCUT_MCP_SESSION_FILE'] =
+        Join-Path $diagnostics 'missing-mcp-session.json'
 
     $process = [Diagnostics.Process]::new()
     $process.StartInfo = $startInfo
@@ -170,7 +173,7 @@ function Test-McpSidecarStartup
         $started = $true
         $process.StandardInput.Close()
         if (-not $process.WaitForExit(10000)) {
-            throw 'shotcut-mcp.exe did not report its missing-token configuration error'
+            throw 'shotcut-mcp.exe did not report its missing-session configuration error'
         }
 
         $stdout = $process.StandardOutput.ReadToEnd()
@@ -188,9 +191,9 @@ function Test-McpSidecarStartup
         }
         if (
             $stderr -notmatch 'failed to configure Shotcut MCP' -or
-            $stderr -notmatch 'SHOTCUT_MCP_TOKEN'
+            $stderr -notmatch 'Open Shotcut first'
         ) {
-            throw 'shotcut-mcp.exe did not emit the expected missing-token configuration error'
+            throw 'shotcut-mcp.exe did not emit the expected missing-session configuration error'
         }
     } finally {
         if ($started -and -not $process.HasExited) {

@@ -70,8 +70,7 @@ inline bool parse(const QString &name, KeyframesModel::InterpolationType *result
     for (int index = 0; index < interpolation.keyCount(); ++index) {
         if (wireName(interpolation.key(index)) == name) {
             if (result) {
-                *result = static_cast<KeyframesModel::InterpolationType>(
-                    interpolation.value(index));
+                *result = static_cast<KeyframesModel::InterpolationType>(interpolation.value(index));
             }
             return true;
         }

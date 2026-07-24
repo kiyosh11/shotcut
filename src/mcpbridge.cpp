@@ -9,8 +9,8 @@
 
 #include "mcpbridge.h"
 
-#include "mcpkeyframeinterpolation.h"
 #include "mcpbridgepolicy.h"
+#include "mcpkeyframeinterpolation.h"
 #include "mcpxmlpathvalidator.h"
 
 #include "Logger.h"
@@ -36,9 +36,12 @@
 #include <MltProducer.h>
 #include <QAction>
 #include <QColor>
+#include <QCoreApplication>
 #include <QCryptographicHash>
+#include <QDateTime>
 #include <QDir>
 #include <QDockWidget>
+#include <QFile>
 #include <QFileInfo>
 #include <QFont>
 #include <QFormLayout>
@@ -49,8 +52,11 @@
 #include <QLocalSocket>
 #include <QLockFile>
 #include <QMenu>
+#include <QRandomGenerator>
+#include <QSaveFile>
 #include <QScopedPointer>
 #include <QScopedValueRollback>
+#include <QStandardPaths>
 #include <QUndoStack>
 #include <QVBoxLayout>
 #include <QWidget>
@@ -58,6 +64,75 @@
 namespace {
 constexpr qsizetype kMaximumMessageBytes = 16 * 1024 * 1024;
 constexpr int kBridgeProtocolVersion = 2;
+
+bool mcpDisabledByEnvironment()
+{
+    if (!qEnvironmentVariableIsSet("SHOTCUT_MCP_ENABLE"))
+        return false;
+    const QString value = qEnvironmentVariable("SHOTCUT_MCP_ENABLE").trimmed().toLower();
+    return value == QStringLiteral("0") || value == QStringLiteral("false")
+           || value == QStringLiteral("no") || value == QStringLiteral("off");
+}
+
+QByteArray generateSessionToken()
+{
+    QByteArray token;
+    token.reserve(64);
+    auto *generator = QRandomGenerator::system();
+    for (int index = 0; index < 4; ++index) {
+        token.append(QByteArray::number(generator->generate64(), 16).rightJustified(16, '0'));
+    }
+    return token;
+}
+
+QString mcpSessionFilePath()
+{
+    const QString configured = qEnvironmentVariable("SHOTCUT_MCP_SESSION_FILE").trimmed();
+    if (!configured.isEmpty())
+        return QFileInfo(configured).absoluteFilePath();
+    return QDir(QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation))
+        .filePath(QStringLiteral("mcp-session.json"));
+}
+
+bool writeMcpSessionFile(const QString &path, const QString &endpoint, const QByteArray &token)
+{
+    const QFileInfo info(path);
+    if (!QDir().mkpath(info.absolutePath()))
+        return false;
+    QSaveFile file(path);
+    file.setDirectWriteFallback(false);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Text))
+        return false;
+    const QJsonObject descriptor{
+        {QStringLiteral("bridge_protocol"), kBridgeProtocolVersion},
+        {QStringLiteral("endpoint"), endpoint},
+        {QStringLiteral("token"), QString::fromLatin1(token)},
+        {QStringLiteral("process_id"), static_cast<double>(QCoreApplication::applicationPid())},
+        {QStringLiteral("created_at"), QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs)},
+    };
+    const QByteArray payload = QJsonDocument(descriptor).toJson(QJsonDocument::Compact);
+    if (file.write(payload) != payload.size() || !file.commit())
+        return false;
+    if (QFile::setPermissions(path, QFileDevice::ReadOwner | QFileDevice::WriteOwner))
+        return true;
+    QFile::remove(path);
+    return false;
+}
+
+void removeMcpSessionFileIfOwned(const QString &path,
+                                 const QString &endpoint,
+                                 const QByteArray &token)
+{
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly) || file.size() > 4096)
+        return;
+    const auto descriptor = QJsonDocument::fromJson(file.readAll()).object();
+    file.close();
+    if (descriptor.value(QStringLiteral("endpoint")).toString() == endpoint
+        && descriptor.value(QStringLiteral("token")).toString().toLatin1() == token) {
+        QFile::remove(path);
+    }
+}
 
 bool pathWithinRoot(const QString &candidatePath, const QString &rootPath)
 {
@@ -136,13 +211,13 @@ McpBridge::RpcResult McpBridge::RpcResult::failure(int code,
     return result;
 }
 
-std::unique_ptr<McpBridge> McpBridge::createFromEnvironment(MainWindow &window)
+std::unique_ptr<McpBridge> McpBridge::create(MainWindow &window)
 {
-    if (qEnvironmentVariableIntValue("SHOTCUT_MCP_ENABLE") != 1)
+    if (mcpDisabledByEnvironment())
         return {};
 
     std::unique_ptr<McpBridge> bridge(new McpBridge(window));
-    if (!bridge->startFromEnvironment())
+    if (!bridge->start())
         return {};
     return bridge;
 }
@@ -157,10 +232,9 @@ McpBridge::McpBridge(MainWindow &window, QObject *parent)
     });
     connect(&m_window, &MainWindow::producerOpened, this, [this](bool) { advanceRevision(); });
     connect(&m_window, &MainWindow::profileChanged, this, [this]() { refreshAutomationDock(); });
-    connect(&m_window,
-            &QWidget::windowTitleChanged,
-            this,
-            [this](const QString &) { refreshAutomationDock(); });
+    connect(&m_window, &QWidget::windowTitleChanged, this, [this](const QString &) {
+        refreshAutomationDock();
+    });
 }
 
 void McpBridge::advanceRevision()
@@ -174,6 +248,7 @@ void McpBridge::advanceRevision()
 McpBridge::~McpBridge()
 {
     m_server.close();
+    removeMcpSessionFileIfOwned(m_sessionFile, m_endpoint, m_token);
     if (m_ownsEndpoint) {
         QLocalServer::removeServer(m_endpoint);
         m_ownsEndpoint = false;
@@ -182,11 +257,14 @@ McpBridge::~McpBridge()
         m_endpointLock->unlock();
 }
 
-bool McpBridge::startFromEnvironment()
+bool McpBridge::start()
 {
     m_token = qgetenv("SHOTCUT_MCP_TOKEN");
-    if (m_token.size() < 32) {
-        LOG_WARNING() << "MCP bridge disabled: SHOTCUT_MCP_TOKEN must be at least 32 characters";
+    if (m_token.isEmpty()) {
+        m_token = generateSessionToken();
+    } else if (m_token.size() < 32) {
+        LOG_WARNING() << "MCP bridge disabled: configured SHOTCUT_MCP_TOKEN must be at least 32 "
+                         "characters";
         return false;
     }
 
@@ -232,6 +310,16 @@ bool McpBridge::startFromEnvironment()
         return false;
     }
     m_ownsEndpoint = true;
+    m_sessionFile = mcpSessionFilePath();
+    if (!writeMcpSessionFile(m_sessionFile, m_endpoint, m_token)) {
+        LOG_WARNING() << "MCP bridge failed to create its protected session descriptor";
+        m_server.close();
+        QLocalServer::removeServer(m_endpoint);
+        m_ownsEndpoint = false;
+        m_endpointLock->unlock();
+        m_endpointLock.reset();
+        return false;
+    }
     LOG_INFO() << "MCP bridge listening on a same-user local socket";
     setupAutomationDock();
     return true;
@@ -266,9 +354,10 @@ void McpBridge::setupAutomationDock()
     layout->addWidget(m_automationConnectionLabel);
 
     auto *description = new QLabel(
-        tr("A local, authenticated AI client can inspect the live project and submit typed, "
-           "revision-checked edits. Timeline edits use Shotcut history; profile changes "
-           "explicitly report their required history reset."),
+        tr("The local MCP bridge starts automatically with Shotcut. An authenticated AI client "
+           "can inspect the live project and submit typed, revision-checked edits. Timeline "
+           "edits use Shotcut history; profile changes explicitly report their required history "
+           "reset."),
         content);
     description->setWordWrap(true);
     layout->addWidget(description);
@@ -283,7 +372,7 @@ void McpBridge::setupAutomationDock()
     m_automationProjectLabel = new QLabel(content);
     m_automationProjectLabel->setTextFormat(Qt::PlainText);
     m_automationProjectLabel->setTextInteractionFlags(Qt::TextSelectableByMouse
-                                                       | Qt::TextSelectableByKeyboard);
+                                                      | Qt::TextSelectableByKeyboard);
     m_automationProjectLabel->setFocusPolicy(Qt::TabFocus);
     m_automationProjectLabel->setWordWrap(true);
     m_automationRevisionLabel = new QLabel(content);
@@ -298,19 +387,16 @@ void McpBridge::setupAutomationDock()
     auto *endpointLabel = new QLabel(content);
     endpointLabel->setTextFormat(Qt::PlainText);
     endpointLabel->setText(m_endpoint);
-    endpointLabel->setTextInteractionFlags(Qt::TextSelectableByMouse
-                                           | Qt::TextSelectableByKeyboard);
+    endpointLabel->setTextInteractionFlags(Qt::TextSelectableByMouse | Qt::TextSelectableByKeyboard);
     endpointLabel->setFocusPolicy(Qt::TabFocus);
     endpointLabel->setWordWrap(true);
     form->addRow(tr("Local endpoint"), endpointLabel);
 
     auto *rootsLabel = new QLabel(content);
     rootsLabel->setTextFormat(Qt::PlainText);
-    rootsLabel->setText(m_allowedRoots.isEmpty()
-                            ? tr("None - file access disabled")
-                            : m_allowedRoots.join(QLatin1Char('\n')));
-    rootsLabel->setTextInteractionFlags(Qt::TextSelectableByMouse
-                                        | Qt::TextSelectableByKeyboard);
+    rootsLabel->setText(m_allowedRoots.isEmpty() ? tr("None - file access disabled")
+                                                 : m_allowedRoots.join(QLatin1Char('\n')));
+    rootsLabel->setTextInteractionFlags(Qt::TextSelectableByMouse | Qt::TextSelectableByKeyboard);
     rootsLabel->setFocusPolicy(Qt::TabFocus);
     rootsLabel->setWordWrap(true);
     form->addRow(tr("Allowed folders"), rootsLabel);
@@ -349,25 +435,22 @@ void McpBridge::refreshAutomationDock(const QString &request, bool succeeded)
         return;
 
     if (m_automationConnectionLabel) {
-        m_automationConnectionLabel->setText(
-            tr("Bridge active - %n open local connection(s)",
-               nullptr,
-               static_cast<int>(m_buffers.size())));
+        m_automationConnectionLabel->setText(tr("Bridge active - %n open local connection(s)",
+                                                nullptr,
+                                                static_cast<int>(m_buffers.size())));
     }
     if (m_automationProjectLabel) {
         const QString path = m_window.fileName();
         const QString display = path.isEmpty() ? tr("Untitled") : QFileInfo(path).fileName();
         m_automationProjectLabel->setText(display);
-        m_automationProjectLabel->setToolTip(
-            QStringLiteral("<p>%1</p>").arg(path.toHtmlEscaped()));
+        m_automationProjectLabel->setToolTip(QStringLiteral("<p>%1</p>").arg(path.toHtmlEscaped()));
     }
     if (m_automationRevisionLabel)
         m_automationRevisionLabel->setText(QString::number(m_revision));
     if (m_automationActivityLabel && !request.isEmpty()) {
         const QString displayRequest = request.left(128);
-        m_automationActivityLabel->setText(
-            succeeded ? tr("%1 completed").arg(displayRequest)
-                      : tr("%1 failed").arg(displayRequest));
+        m_automationActivityLabel->setText(succeeded ? tr("%1 completed").arg(displayRequest)
+                                                     : tr("%1 failed").arg(displayRequest));
     } else if (m_automationActivityLabel && m_automationActivityLabel->text().isEmpty()) {
         m_automationActivityLabel->setText(tr("Waiting for a request"));
     }
@@ -457,23 +540,22 @@ void McpBridge::onReadyRead(QLocalSocket *socket)
                                       == static_cast<double>(protocolValue.toInt())
                                && protocolValue.toInt() == kBridgeProtocolVersion;
     if (!validProtocol) {
-        writeResponse(
-            socket,
-            QJsonObject{
-                {QStringLiteral("jsonrpc"), QStringLiteral("2.0")},
-                {QStringLiteral("id"), id},
-                {QStringLiteral("error"),
-                 QJsonObject{
-                     {QStringLiteral("code"), -32006},
-                     {QStringLiteral("message"),
-                      QStringLiteral("Incompatible Shotcut MCP bridge protocol")},
-                     {QStringLiteral("data"),
+        writeResponse(socket,
                       QJsonObject{
-                          {QStringLiteral("expected"), kBridgeProtocolVersion},
-                          {QStringLiteral("received"), protocolValue},
-                      }},
-                 }},
-            });
+                          {QStringLiteral("jsonrpc"), QStringLiteral("2.0")},
+                          {QStringLiteral("id"), id},
+                          {QStringLiteral("error"),
+                           QJsonObject{
+                               {QStringLiteral("code"), -32006},
+                               {QStringLiteral("message"),
+                                QStringLiteral("Incompatible Shotcut MCP bridge protocol")},
+                               {QStringLiteral("data"),
+                                QJsonObject{
+                                    {QStringLiteral("expected"), kBridgeProtocolVersion},
+                                    {QStringLiteral("received"), protocolValue},
+                                }},
+                           }},
+                      });
         return;
     }
 
@@ -592,8 +674,7 @@ QJsonObject McpBridge::editorStatus() const
             continue;
         QJsonArray keyframeParameters;
         if (metadata->keyframes()) {
-            for (int parameterIndex = 0;
-                 parameterIndex < metadata->keyframes()->parameterCount();
+            for (int parameterIndex = 0; parameterIndex < metadata->keyframes()->parameterCount();
                  ++parameterIndex) {
                 const auto *parameter = metadata->keyframes()->parameter(parameterIndex);
                 if (!parameter)
@@ -608,8 +689,7 @@ QJsonObject McpBridge::editorStatus() const
                      parameter->rangeType() == QmlKeyframesParameter::ClipLength
                          ? QStringLiteral("clip_length")
                          : QStringLiteral("min_max")},
-                    {QStringLiteral("allow_overshoot"),
-                     metadata->keyframes()->allowOvershoot()},
+                    {QStringLiteral("allow_overshoot"), metadata->keyframes()->allowOvershoot()},
                     {QStringLiteral("numeric"), !parameter->isRectangle() && !parameter->isColor()},
                 });
             }
@@ -734,12 +814,10 @@ QJsonObject McpBridge::projectSnapshot() const
                     QJsonArray keyframes;
                     QJsonObject keyframeRange;
                     bool hasAnyAdvancedKeyframes = false;
-                    const int simpleAnimateIn = qMax(
-                        0,
-                        service->time_to_frames(service->get(kShotcutAnimInProperty)));
-                    const int simpleAnimateOut = qMax(
-                        0,
-                        service->time_to_frames(service->get(kShotcutAnimOutProperty)));
+                    const int simpleAnimateIn
+                        = qMax(0, service->time_to_frames(service->get(kShotcutAnimInProperty)));
+                    const int simpleAnimateOut
+                        = qMax(0, service->time_to_frames(service->get(kShotcutAnimOutProperty)));
                     if (metadata && actualIsFilter && isBundledFilterMetadata(metadata)
                         && metadata->keyframes()) {
                         int clipOffset = 0;
@@ -759,8 +837,7 @@ QJsonObject McpBridge::projectSnapshot() const
                         for (int parameterIndex = 0;
                              parameterIndex < metadata->keyframes()->parameterCount();
                              ++parameterIndex) {
-                            const auto *parameter
-                                = metadata->keyframes()->parameter(parameterIndex);
+                            const auto *parameter = metadata->keyframes()->parameter(parameterIndex);
                             if (!parameter)
                                 continue;
                             const QString property = parameter->property();
@@ -915,19 +992,19 @@ QJsonObject McpBridge::projectSnapshot() const
         {QStringLiteral("current_track"), timeline->currentTrack()},
         {QStringLiteral("profile"),
          QJsonObject{{QStringLiteral("width"), MLT.profile().width()},
-                      {QStringLiteral("height"), MLT.profile().height()},
-                      {QStringLiteral("fps"), MLT.profile().fps()},
-                      {QStringLiteral("frame_rate_num"), MLT.profile().frame_rate_num()},
-                      {QStringLiteral("frame_rate_den"), MLT.profile().frame_rate_den()},
-                      {QStringLiteral("display_aspect_num"), MLT.profile().display_aspect_num()},
-                      {QStringLiteral("display_aspect_den"), MLT.profile().display_aspect_den()},
-                      {QStringLiteral("sample_aspect_num"), MLT.profile().sample_aspect_num()},
-                      {QStringLiteral("sample_aspect_den"), MLT.profile().sample_aspect_den()},
-                      {QStringLiteral("colorspace"),
-                       profileColorspaceName(MLT.profile().colorspace())},
-                      {QStringLiteral("colorspace_code"), MLT.profile().colorspace()},
-                      {QStringLiteral("dynamic_range"), dynamicRange},
-                      {QStringLiteral("progressive"), MLT.profile().progressive() != 0}}},
+                     {QStringLiteral("height"), MLT.profile().height()},
+                     {QStringLiteral("fps"), MLT.profile().fps()},
+                     {QStringLiteral("frame_rate_num"), MLT.profile().frame_rate_num()},
+                     {QStringLiteral("frame_rate_den"), MLT.profile().frame_rate_den()},
+                     {QStringLiteral("display_aspect_num"), MLT.profile().display_aspect_num()},
+                     {QStringLiteral("display_aspect_den"), MLT.profile().display_aspect_den()},
+                     {QStringLiteral("sample_aspect_num"), MLT.profile().sample_aspect_num()},
+                     {QStringLiteral("sample_aspect_den"), MLT.profile().sample_aspect_den()},
+                     {QStringLiteral("colorspace"),
+                      profileColorspaceName(MLT.profile().colorspace())},
+                     {QStringLiteral("colorspace_code"), MLT.profile().colorspace()},
+                     {QStringLiteral("dynamic_range"), dynamicRange},
+                     {QStringLiteral("progressive"), MLT.profile().progressive() != 0}}},
         {QStringLiteral("selection"), selection},
         {QStringLiteral("tracks"), tracks},
         {QStringLiteral("subtitle_tracks"), subtitleTracks},
@@ -1001,11 +1078,8 @@ bool McpBridge::bundledMltServiceAllowed(const QString &element,
     return false;
 }
 
-bool McpBridge::filterClipContext(int track,
-                                  int clip,
-                                  int &sourceIn,
-                                  int &sourceOut,
-                                  int &playlistStart) const
+bool McpBridge::filterClipContext(
+    int track, int clip, int &sourceIn, int &sourceOut, int &playlistStart) const
 {
     auto *model = m_window.timelineDock()->model();
     const auto info = model->getClipInfo(track, clip);
@@ -1370,8 +1444,21 @@ bool McpBridge::validateMediaResourcePaths(const QString &path, QString &error) 
 void McpBridge::loadAllowedRoots()
 {
     m_allowedRoots.clear();
-    auto configured = qEnvironmentVariable("SHOTCUT_MCP_ALLOWED_ROOTS")
-                          .split(QDir::listSeparator(), Qt::SkipEmptyParts);
+    QStringList configured;
+    if (qEnvironmentVariableIsSet("SHOTCUT_MCP_ALLOWED_ROOTS")) {
+        configured = qEnvironmentVariable("SHOTCUT_MCP_ALLOWED_ROOTS")
+                         .split(QDir::listSeparator(), Qt::SkipEmptyParts);
+    } else {
+        const QList<QStandardPaths::StandardLocation> defaultLocations{
+            QStandardPaths::MoviesLocation,
+            QStandardPaths::DownloadLocation,
+            QStandardPaths::DocumentsLocation,
+            QStandardPaths::PicturesLocation,
+            QStandardPaths::MusicLocation,
+        };
+        for (const auto location : defaultLocations)
+            configured.append(QStandardPaths::standardLocations(location));
+    }
 
     for (const auto &root : configured) {
         QFileInfo info(root);

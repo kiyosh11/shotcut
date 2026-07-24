@@ -9,11 +9,11 @@
 
 #include "mcpbridge.h"
 
-#include "mcpkeyframeinterpolation.h"
 #include "commands/subtitlecommands.h"
 #include "controllers/filtercontroller.h"
 #include "docks/timelinedock.h"
 #include "mainwindow.h"
+#include "mcpkeyframeinterpolation.h"
 #include "models/attachedfiltersmodel.h"
 #include "models/keyframesmodel.h"
 #include "models/subtitlesmodel.h"
@@ -96,11 +96,7 @@ bool McpBridge::applyFilterOperation(const QJsonObject &operation, QString &erro
     int filterSourceOut = -1;
     int playlistStart = 0;
     if (!producer.is_valid()
-        || !filterClipContext(track,
-                              clip,
-                              filterSourceIn,
-                              filterSourceOut,
-                              playlistStart)) {
+        || !filterClipContext(track, clip, filterSourceIn, filterSourceOut, playlistStart)) {
         error = QStringLiteral("filter clip timing is unavailable");
         return false;
     }
@@ -226,8 +222,9 @@ bool McpBridge::applyFilterOperation(const QJsonObject &operation, QString &erro
         const bool hasInterpolation = operation.contains(QStringLiteral("interpolation"));
         auto interpolation = KeyframesModel::LinearInterpolation;
         if (hasInterpolation
-            && !McpKeyframeInterpolation::parse(
-                operation.value(QStringLiteral("interpolation")).toString(), &interpolation)) {
+            && !McpKeyframeInterpolation::parse(operation.value(QStringLiteral("interpolation"))
+                                                    .toString(),
+                                                &interpolation)) {
             error = QStringLiteral("interpolation is invalid");
             return false;
         }
@@ -255,10 +252,7 @@ bool McpBridge::applyFilterOperation(const QJsonObject &operation, QString &erro
             filter->updateUndoCommand(property);
             if (parameter) {
                 for (const auto &gangedProperty : parameter->gangedProperties()) {
-                    filter->set(gangedProperty,
-                                value,
-                                position,
-                                mlt_keyframe_type(interpolation));
+                    filter->set(gangedProperty, value, position, mlt_keyframe_type(interpolation));
                     filter->updateUndoCommand(gangedProperty);
                 }
             }
@@ -303,11 +297,7 @@ bool McpBridge::applyFilterParameters(
     int filterSourceOut = -1;
     int playlistStart = 0;
     if (!producer.is_valid()
-        || !filterClipContext(track,
-                              clip,
-                              filterSourceIn,
-                              filterSourceOut,
-                              playlistStart)) {
+        || !filterClipContext(track, clip, filterSourceIn, filterSourceOut, playlistStart)) {
         error = QStringLiteral("filter clip timing is unavailable");
         return false;
     }
